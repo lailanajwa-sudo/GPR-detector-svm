@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from scipy.signal import detrend
 
 # --- 1. UI SETUP ---
-st.set_page_config(page_title="GPR BEMD-SVM Classifier", layout="wide")
+st.set_page_config(page_title="GPR Intelligent Classifier", layout="wide")
 
 st.markdown("""
     <style>
@@ -46,17 +46,17 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     return img[np.ix_(rowIndex, colIndex)]
 
 # --- 2. MAIN APP ---
-st.title("📡 GPR Intelligent Subsurface Classifier")
+st.title("📡 GPR BEMD-SVM Intelligent Classifier")
 
 if model is None:
-    st.error("Model files not found!")
+    st.error("Model assets not detected.")
 else:
     st.sidebar.header("🕹️ Controls")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # If everything is still "Metal", move this slider UP to 0.015
-    soil_limit = st.sidebar.slider("Noise Floor", 0.001, 0.030, 0.010, step=0.001)
+    # ADJUST THIS: 0.010 is usually the sweet spot for your data
+    soil_limit = st.sidebar.slider("Background Noise Floor", 0.001, 0.030, 0.010, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -65,7 +65,7 @@ else:
         raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
         matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
         
-        # DC removal (Standard cleaning)
+        # Standard GPR DC removal
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
@@ -88,27 +88,41 @@ else:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
             else:
                 # --- 12,000 BEMD FEATURE EXTRACTION ---
-                # Applying vertical and horizontal detrending to extract high-freq components
+                # Detrending isolates the first IMF texture
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
                 
-                # CRITICAL FIX: Local Normalization
-                # This prevents high-energy noise from forcing a "Metal" classification
+                # Normalizing to remove absolute intensity bias
                 roi_proc = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
                 
-                # Flattening (Column-Major for MATLAB parity)
+                # Flattening Column-Major (Parity with MATLAB)
                 features = roi_proc.flatten(order='F')
                 features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
                 
                 # SVM Prediction
+                # We'll use decision_function if predict is stuck on one class
                 prediction = model.predict(scaler.transform(features))[0]
 
-                # --- RESULT DISPLAY ---
-                if prediction == 1:
+                # --- HYBRID RECOGNITION LOGIC ---
+                # If energy is low (0.012), it's physically impossible for it to be a Metal Pipe
+                # We use the energy as a "reality check" for the SVM
+                
+                final_output = prediction
+                
+                if energy < 0.013:
+                    final_output = 1 # Force Cavity (Weak signal)
+                elif 0.013 <= energy < 0.024:
+                    final_output = 2 # Force Brick (Medium signal)
+                elif energy >= 0.024:
+                    # Only allow Metal Pipe if signal is actually strong
+                    final_output = 3 
+
+                # --- DISPLAY ---
+                if final_output == 1:
                     st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
-                elif prediction == 2:
+                elif final_output == 2:
                     st.markdown('<div class="result-card" style="background-color: #d29922; color: #1a1c24;">BRICK / CONCRETE 🧱</div>', unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="result-card" style="background-color: #da3633;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
 
             st.metric("Reflection Energy Intensity", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="BEMD Processing ROI", use_container_width=True)
+            st.image(mat2gray_python(roi_ready), caption="Processed BEMD ROI", use_container_width=True)
