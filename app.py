@@ -6,8 +6,8 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.signal import detrend
 
-# --- 1. UI CONFIG ---
-st.set_page_config(page_title="GPR Intelligent Classifier", page_icon="📡", layout="wide")
+# --- 1. UI SETUP ---
+st.set_page_config(page_title="GPR Intelligent Classifier Pro", layout="wide")
 
 st.markdown("""
     <style>
@@ -39,7 +39,6 @@ def mat2gray_python(img):
 def matlab_resize_manual(img, new_shape=(100, 120)):
     old_h, old_w = img.shape
     if old_h == 0 or old_w == 0: return np.zeros(new_shape)
-    new_h, new_w = new_shape
     scale_y, scale_x = new_h / old_h, new_w / old_w
     rowIndex = np.minimum(np.round(((np.arange(1, new_h + 1)) - 0.5) / scale_y + 0.5).astype(int), old_h) - 1
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
@@ -49,14 +48,14 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 st.title("📡 GPR Intelligent Subsurface Classifier")
 
 if model is None:
-    st.error("Model assets missing!")
+    st.error("Assets missing!")
 else:
     st.sidebar.header("🕹️ Controls")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # Try setting this to 0.011 during your demo to kill medium-change noise
-    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.011, step=0.001)
+    # Recommended for demo: 0.010
+    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.010, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -87,26 +86,35 @@ else:
             else:
                 # 1. Feature Extraction
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                f = mat2gray_python(imf1).flatten(order='F')
+                f_processed = mat2gray_python(imf1)
+                f = f_processed.flatten(order='F')
                 f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
                 
-                # 2. SVM Prediction
+                # 2. Apex Sharpness Analysis (Tie-Breaker)
+                # We check the top-center 20x20 pixels
+                apex_zone = f_processed[10:30, 50:70]
+                apex_sharpness = np.max(apex_zone) - np.mean(apex_zone)
+                
+                # 3. SVM Prediction
                 raw_pred = model.predict(scaler.transform(f))[0]
                 
-                # 3. ENERGY REFINEMENT (The "Truth" Filter)
-                # This prevents "Medium Changes" (usually around 0.03) and 
-                # "Cavities" (low energy) from being called Bricks.
-                
+                # 4. FINAL CLASSIFICATION LOGIC
                 final_pred = raw_pred
                 
+                # Force Metal if energy is very high
                 if energy > 0.032:
-                    final_pred = 3 # Definitely Metal
-                elif 0.016 <= energy <= 0.032:
-                    final_pred = 2 # Brick Range
-                elif energy < 0.016:
-                    final_pred = 1 # Cavity Range
+                    final_pred = 3 
+                # Refine Brick vs Cavity
+                elif 0.013 <= energy <= 0.032:
+                    # If it's a sharp peak, call it Brick. If it's dull, call it Cavity.
+                    if apex_sharpness > 0.4:
+                        final_pred = 2 # Brick
+                    else:
+                        final_pred = 1 # Cavity
+                else:
+                    final_pred = 1 # Weak signal is always Cavity
 
-                # 4. RESULTS
+                # 5. UI DISPLAY
                 if final_pred == 1:
                     st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
                 elif final_pred == 2:
@@ -114,5 +122,5 @@ else:
                 else:
                     st.markdown('<div class="result-card" style="background-color: #da3633;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
 
-            st.metric("Reflection Energy", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="BEMD ROI", use_container_width=True)
+            st.metric("Reflection Energy Intensity", f"{energy:.4f}")
+            st.image(mat2gray_python(roi_ready), caption="BEMD Processing ROI", use_container_width=True)
