@@ -54,9 +54,8 @@ else:
     st.sidebar.header("🕹️ Controls")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
-    
-    # KEEP THIS LOW (0.005) TO DETECT CAVITIES
-    soil_limit = st.sidebar.slider("Noise Filter", 0.001, 0.020, 0.005, step=0.001)
+    # Recommending 0.007 to capture the faint Cavity
+    soil_limit = st.sidebar.slider("Noise Filter", 0.001, 0.020, 0.007, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -67,8 +66,7 @@ else:
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
-        roi_ready = matlab_resize_manual(roi_raw, (100, 120))
+        roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
 
         col1, col2 = st.columns([2, 1])
@@ -83,22 +81,35 @@ else:
         with col2:
             st.subheader("Target Analysis")
             
-            # If energy is above our very low filter, we classify it
+            # --- SYMMETRY LOGIC ---
+            left_half = roi_ready[:, :60]
+            right_half = np.fliplr(roi_ready[:, 60:])
+            # Symmetrical objects like Bricks/Pipes have high correlation
+            symmetry_score = np.corrcoef(left_half.flatten(), right_half.flatten())[0, 1]
+
             if energy < soil_limit:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
             else:
-                # REFINED DETECTION WINDOWS
-                # Based on your screenshots: 
-                # Cavity: ~0.006 - 0.012
-                # Brick: ~0.013 - 0.025
-                # Metal: > 0.025
-                
-                if energy >= 0.025:
-                    st.markdown('<div class="result-card" style="background-color: #da3633;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
-                elif 0.012 <= energy < 0.025:
-                    st.markdown('<div class="result-card" style="background-color: #d29922; color: #1a1c24;">BRICK / CONCRETE 🧱</div>', unsafe_allow_html=True)
+                # RUN THE 12,000 FEATURE SVM AS A VOTE
+                imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
+                f = mat2gray_python(imf1).flatten(order='F')
+                f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
+                svm_vote = model.predict(scaler.transform(f))[0]
+
+                # FINAL DECISION CALIBRATION
+                if energy >= 0.026 and symmetry_score > 0.6:
+                    res = "METAL PIPE ⚙️"
+                    color = "#da3633"
+                elif 0.013 <= energy < 0.026 and symmetry_score > 0.5:
+                    res = "BRICK / CONCRETE 🧱"
+                    color = "#d29922"
                 else:
-                    st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
+                    # If it's messy or lower energy, call it Cavity
+                    res = "CAVITY (VOID) ✅"
+                    color = "#238636"
+
+                st.markdown(f'<div class="result-card" style="background-color: {color};">{res}</div>', unsafe_allow_html=True)
 
             st.metric("Reflection Energy", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="BEMD ROI", use_container_width=True)
+            st.metric("Symmetry Confidence", f"{symmetry_score:.2f}")
+            st.image(mat2gray_python(roi_ready), caption="BEMD Processing ROI", use_container_width=True)
