@@ -13,13 +13,14 @@ def load_assets():
 
 model, scaler = load_assets()
 
-st.set_page_config(page_title="GPR Assignment", layout="wide")
+st.set_page_config(page_title="GPR Assignment Final", layout="wide")
 st.title("📡 MALA GPR Classification System")
 
 # ROI Positioners
 st.sidebar.header("Target Selection")
-v_start = st.sidebar.slider("Vertical (Depth)", 0, 212, 110) # Defaulted closer to your image
-h_start = st.sidebar.slider("Horizontal (Trace)", 0, 300, 210)
+# Adjust these sliders until the RED BOX is exactly on the hyperbola
+v_start = st.sidebar.slider("Vertical (Depth)", 0, 212, 125) 
+h_start = st.sidebar.slider("Horizontal (Trace)", 0, 300, 215)
 
 uploaded_files = st.file_uploader("Upload .rad and .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -40,23 +41,24 @@ if len(uploaded_files) == 2:
         num_traces = len(raw_data) // samples_val
         
         if num_traces > 0:
-            # 3. Process Matrix (Fortran Order)
+            # 3. Process Matrix
             matrix = raw_data[:samples_val*num_traces].reshape((samples_val, num_traces), order='F')
+            # Background removal (MATLAB style)
             matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
             
-            # 4. Extract ROI
+            # 4. Extract and Standardize ROI
             roi = matrix_clean[v_start:v_start+100, h_start:h_start+120]
-
-            # --- THE FIX: ROI NORMALIZATION ---
-            # This forces the hyperbola to have the same "brightness" as your training data
-            if np.max(np.abs(roi)) > 0:
-                roi_norm = roi / np.max(np.abs(roi))
+            
+            # --- THE FINAL FIX: Z-SCORE STANDARDIZATION ---
+            # This replicates MATLAB's zscore(data) inside the ROI
+            if np.std(roi) > 0:
+                roi_final = (roi - np.mean(roi)) / np.std(roi)
             else:
-                roi_norm = roi
+                roi_final = roi
 
             # 5. UI Layout
             col1, col2 = st.columns([2, 1])
-            limit = np.percentile(np.abs(matrix_clean), 99)
+            limit = np.percentile(np.abs(matrix_clean), 98)
 
             with col1:
                 st.subheader("Radargram (Target Selection)")
@@ -69,26 +71,26 @@ if len(uploaded_files) == 2:
             with col2:
                 st.subheader("Classification")
                 fig2, ax2 = plt.subplots()
-                ax2.imshow(roi_norm, cmap='gray', aspect='auto', vmin=-1, vmax=1)
-                ax2.set_title("Normalized ROI")
+                ax2.imshow(roi_final, cmap='gray', aspect='auto')
+                ax2.set_title("Standardized ROI")
                 st.pyplot(fig2)
 
-                # Prediction with 'F' flattening
-                features = roi_norm.flatten(order='F').reshape(1, -1)
+                # 6. Predict with Fortran Flattening
+                features = roi_final.flatten(order='F').reshape(1, -1)
+                
+                # Apply the scaler from training
                 scaled_feat = scaler.transform(features)
                 pred = model.predict(scaled_feat)[0]
                 
-                # Check labels match your Excel order!
-                # 1=Cavity, 2=Metal Pipe, 3=Brick
+                # --- DOUBLE CHECK THIS MAPPING ---
+                # Based on your prompt: 1=Cavity, 2=Metal Pipe, 3=Brick
                 labels = {1: "Cavity", 2: "Metal Pipe", 3: "Brick"}
                 result = labels.get(pred, "Unknown")
                 
                 if result == "Cavity":
                     st.success(f"### Result: {result} ✅")
+                elif result == "Metal Pipe":
+                    st.info(f"### Result: {result} ⚙️")
                 else:
-                    st.error(f"### Result: {result}")
-                    st.write("Tip: Adjust sliders to center the red box perfectly on the hyperbola.")
-
-### LAST MINUTE CHECKLIST:
-# 1. Did you use order='F' in your Colab training flattening? 
-# 2. Is '1' actually Cavity in your Excel? If Brick is row 1-30, change labels to {1: "Brick", ...}
+                    st.warning(f"### Result: {result} 🧱")
+                    st.write("Tip: If it still says Brick, check if your Excel labels match 1=Cavity.")
