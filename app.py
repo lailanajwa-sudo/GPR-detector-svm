@@ -13,14 +13,13 @@ def load_assets():
 
 model, scaler = load_assets()
 
-st.set_page_config(page_title="GPR Classifier", layout="wide")
-st.title("📡 MALA GPR Analysis System")
+st.set_page_config(page_title="GPR Assignment", layout="wide")
+st.title("📡 MALA GPR Classification System")
 
-# Manual Override Sliders in Sidebar
-st.sidebar.header("Manual ROI Adjustment")
-manual_mode = st.sidebar.checkbox("Enable Manual ROI", value=False)
-v_start = st.sidebar.slider("Vertical Start", 0, 212, 50)
-h_start = st.sidebar.slider("Horizontal Start", 0, 300, 150)
+# ROI Positioners
+st.sidebar.header("Target Selection")
+v_start = st.sidebar.slider("Vertical (Depth)", 0, 212, 110) # Defaulted closer to your image
+h_start = st.sidebar.slider("Horizontal (Trace)", 0, 300, 210)
 
 uploaded_files = st.file_uploader("Upload .rad and .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -29,7 +28,7 @@ if len(uploaded_files) == 2:
     rd3_file = next((f for f in uploaded_files if f.name.endswith('.rd3')), None)
 
     if rad_file and rd3_file:
-        # 1. Parse RAD for samples
+        # 1. Parse RAD
         rad_content = rad_file.getvalue().decode("utf-8")
         samples_val = 312 
         for line in rad_content.split('\n'):
@@ -41,64 +40,55 @@ if len(uploaded_files) == 2:
         num_traces = len(raw_data) // samples_val
         
         if num_traces > 0:
-            # 3. Reshape (F-order is vital for MATLAB compatibility)
+            # 3. Process Matrix (Fortran Order)
             matrix = raw_data[:samples_val*num_traces].reshape((samples_val, num_traces), order='F')
-            
-            # Background Removal
             matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
             
-            # 4. Determine ROI Position
-            if not manual_mode:
-                # AUTO-DETECTION: Find the strongest signal area (excluding top 40 surface samples)
-                search_area = np.abs(matrix_clean[40:, :])
-                max_idx = np.unravel_index(np.argmax(search_area), search_area.shape)
-                # Center the 100x120 window on the peak
-                y_pos = max(0, max_idx[0] + 40 - 50) 
-                x_pos = max(0, max_idx[1] - 60)
+            # 4. Extract ROI
+            roi = matrix_clean[v_start:v_start+100, h_start:h_start+120]
+
+            # --- THE FIX: ROI NORMALIZATION ---
+            # This forces the hyperbola to have the same "brightness" as your training data
+            if np.max(np.abs(roi)) > 0:
+                roi_norm = roi / np.max(np.abs(roi))
             else:
-                y_pos, x_pos = v_start, h_start
+                roi_norm = roi
 
-            # Ensure ROI stays within bounds
-            y_end = min(y_pos + 100, samples_val)
-            x_end = min(x_pos + 120, num_traces)
-            y_start = y_end - 100
-            x_start = x_end - 120
-
-            roi = matrix_clean[y_start:y_end, x_start:x_end]
-
-            # 5. Display and Predict
+            # 5. UI Layout
             col1, col2 = st.columns([2, 1])
             limit = np.percentile(np.abs(matrix_clean), 99)
 
             with col1:
-                st.subheader("Radargram (Red Box = ROI)")
+                st.subheader("Radargram (Target Selection)")
                 fig, ax = plt.subplots()
                 ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
-                rect = patches.Rectangle((x_start, y_start), 120, 100, linewidth=2, edgecolor='r', facecolor='none')
+                rect = patches.Rectangle((h_start, v_start), 120, 100, linewidth=2, edgecolor='r', facecolor='none')
                 ax.add_patch(rect)
                 st.pyplot(fig)
 
             with col2:
                 st.subheader("Classification")
-                # Show ROI
                 fig2, ax2 = plt.subplots()
-                ax2.imshow(roi, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
+                ax2.imshow(roi_norm, cmap='gray', aspect='auto', vmin=-1, vmax=1)
+                ax2.set_title("Normalized ROI")
                 st.pyplot(fig2)
 
-                # Prediction Logic
-                # Use 'F' order to flatten exactly like MATLAB xlsread/xlswrite
-                features = roi.flatten(order='F').reshape(1, -1)
+                # Prediction with 'F' flattening
+                features = roi_norm.flatten(order='F').reshape(1, -1)
                 scaled_feat = scaler.transform(features)
                 pred = model.predict(scaled_feat)[0]
                 
+                # Check labels match your Excel order!
+                # 1=Cavity, 2=Metal Pipe, 3=Brick
                 labels = {1: "Cavity", 2: "Metal Pipe", 3: "Brick"}
                 result = labels.get(pred, "Unknown")
                 
                 if result == "Cavity":
                     st.success(f"### Result: {result} ✅")
-                elif result == "Metal Pipe":
-                    st.info(f"### Result: {result} 🛠️")
                 else:
-                    st.warning(f"### Result: {result} 🧱")
-    else:
-        st.error("Missing files.")
+                    st.error(f"### Result: {result}")
+                    st.write("Tip: Adjust sliders to center the red box perfectly on the hyperbola.")
+
+### LAST MINUTE CHECKLIST:
+# 1. Did you use order='F' in your Colab training flattening? 
+# 2. Is '1' actually Cavity in your Excel? If Brick is row 1-30, change labels to {1: "Brick", ...}
