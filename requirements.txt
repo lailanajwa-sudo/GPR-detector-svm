@@ -6,3 +6,4 @@ matplotlib
 joblib
 openpyxl
 opencv-python-headless
+pillow
