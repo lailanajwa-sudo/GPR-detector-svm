@@ -8,26 +8,28 @@ from PIL import Image
 # 1. Load Assets
 @st.cache_resource
 def load_assets():
-    model = joblib.load('svm_model.pkl')
-    scaler = joblib.load('scaler.pkl')
-    return model, scaler
+    try:
+        model = joblib.load('svm_model.pkl')
+        scaler = joblib.load('scaler.pkl')
+        return model, scaler
+    except Exception as e:
+        st.error(f"Error loading model: {e}")
+        return None, None
 
 model, scaler = load_assets()
 
-st.title("📡 GPR Classification - Final Fix")
+st.title("📡 GPR Classification System")
 
-# 2. Sidebar Controls
-st.sidebar.header("ROI Alignment")
-# Based on your screenshots, these are common hyperbola areas
+# 2. Sidebar for ROI Controls
+st.sidebar.header("Target Selection")
 v_start = st.sidebar.slider("Vertical (Depth)", 0, 212, 115) 
 h_start = st.sidebar.slider("Horizontal (Trace)", 0, 400, 210)
-# Manual scaling factors mentioned in your prompt
-box_w = st.sidebar.slider("Box Width", 50, 200, 120)
-box_h = st.sidebar.slider("Box Height", 50, 200, 100)
+box_w = st.sidebar.slider("Box Width (col)", 50, 250, 120)
+box_h = st.sidebar.slider("Box Height (row)", 50, 200, 100)
 
 uploaded_files = st.file_uploader("Upload .rad and .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
-if len(uploaded_files) == 2:
+if len(uploaded_files) == 2 and model is not None:
     rad_file = next((f for f in uploaded_files if f.name.endswith('.rad')), None)
     rd3_file = next((f for f in uploaded_files if f.name.endswith('.rd3')), None)
 
@@ -39,47 +41,45 @@ if len(uploaded_files) == 2:
             if "SAMPLES:" in line:
                 samples_val = int(line.split(':')[1].strip())
         
-        # Read Binary
+        # Read Binary RD3
         raw_data = np.frombuffer(rd3_file.read(), dtype=np.int16).astype(float)
         num_traces = len(raw_data) // samples_val
         
         if num_traces > 0:
-            # Create Matrix (order='F' is critical for MATLAB data)
+            # Create Matrix (order='F' matches MATLAB)
             matrix = raw_data[:samples_val*num_traces].reshape((samples_val, num_traces), order='F')
-            
             # Background Removal
             matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
             
-            # 3. EXTRACTION & RESIZING (PIL avoids the cv2 error)
-            roi_raw = matrix_clean[v_start : v_start+box_h, h_start : h_start+box_w]
+            # 3. EXTRACTION & RESIZING
+            # Ensure ROI is within data bounds
+            y1, x1 = min(v_start, samples_val-5), min(h_start, num_traces-5)
+            y2, x2 = min(y1+box_h, samples_val), min(x1+box_w, num_traces)
+            roi_raw = matrix_clean[y1:y2, x1:x2]
             
             if roi_raw.size > 0:
-                # Resize to exactly 100x120 (Matches your BEMD 12000 feature vector)
+                # Resize to 100x120 using PIL (safe alternative to cv2)
                 img = Image.fromarray(roi_raw)
                 img_res = img.resize((120, 100), resample=Image.BILINEAR)
                 roi_resized = np.array(img_res)
                 
-                # --- THE CRITICAL NORMALIZATION FIX ---
-                # We force the ROI to have a Standard Deviation of 0.005 
-                # to match your Excel's 'gpr_bemd' scale perfectly.
-                roi_std = np.std(roi_resized)
-                if roi_std > 0:
-                    # Step A: Z-score (makes mean 0, std 1)
-                    roi_norm = (roi_resized - np.mean(roi_resized)) / roi_std
-                    # Step B: Scale down to the "Excel Range" (std 0.005)
-                    roi_final = roi_norm * 0.005
+                # --- RANGE SCALING FIX ---
+                # Your Excel data is roughly in the range [-0.035, 0.035].
+                # We map the live ROI to this exact range.
+                roi_min, roi_max = np.min(roi_resized), np.max(roi_resized)
+                if roi_max - roi_min > 0:
+                    # Scale to [-1, 1] then multiply by 0.035
+                    roi_final = (((roi_resized - roi_min) / (roi_max - roi_min)) * 2 - 1) * 0.035
                 else:
                     roi_final = roi_resized
 
                 # 4. PREDICTION
-                # Flatten using 'F' to match MATLAB's bemd_gpr.m sequence
+                # Flatten using 'F' order (MATLAB column-major)
                 features = roi_final.flatten(order='F').reshape(1, -1)
-                
-                # Apply the original training scaler
                 scaled_feat = scaler.transform(features)
                 pred = model.predict(scaled_feat)[0]
                 
-                # LABEL MAPPING (1:Cavity, 2:Brick, 3:Metal)
+                # Labels: 1=Cavity, 2=Brick, 3=Metal Pipe
                 labels = {1: "Cavity", 2: "Brick", 3: "Metal Pipe"}
                 result = labels.get(pred, "Unknown")
                 
@@ -88,23 +88,27 @@ if len(uploaded_files) == 2:
                 limit = np.percentile(np.abs(matrix_clean), 98)
 
                 with col1:
+                    st.subheader("Radargram View")
                     fig, ax = plt.subplots()
                     ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
-                    rect = patches.Rectangle((h_start, v_start), box_w, box_h, linewidth=2, edgecolor='r', facecolor='none')
+                    rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=2, edgecolor='r', facecolor='none')
                     ax.add_patch(rect)
                     st.pyplot(fig)
 
                 with col2:
-                    st.subheader(f"Prediction: {result}")
+                    st.subheader("Classification Result")
                     if result == "Cavity":
-                        st.success("Target Identified! ✅")
+                        st.success(f"### {result} ✅")
                     elif result == "Brick":
-                        st.warning("Target: Brick 🧱")
+                        st.warning(f"### {result} 🧱")
                     else:
-                        st.info("Target: Metal Pipe ⚙️")
+                        st.info(f"### {result} ⚙️")
 
-                    # Debug: Show the ROI "Value Range"
-                    st.write(f"ROI Max Value: {np.max(roi_final):.4f}")
-                    st.image(roi_final, caption="Normalized Input", use_container_width=True)
+                    # Use st.pyplot to avoid the Range Error
+                    fig2, ax2 = plt.subplots()
+                    ax2.imshow(roi_final, cmap='gray', aspect='auto')
+                    ax2.set_title("Input to SVM (Scaled)")
+                    st.pyplot(fig2)
+                    st.write(f"Value Range: {np.min(roi_final):.3f} to {np.max(roi_final):.3f}")
             else:
-                st.error("ROI is out of bounds. Adjust sliders.")
+                st.error("ROI selection is invalid.")
