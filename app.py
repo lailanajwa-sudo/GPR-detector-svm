@@ -31,17 +31,17 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. INTERFACE ---
-st.set_page_config(page_title="GPR Autonomous AI", layout="wide")
+# --- 2. UI SETUP ---
+st.set_page_config(page_title="GPR Intelligent Classifier", layout="wide")
 st.title("📡 GPR BEMD-SVM Autonomous Classifier")
 
 if model is None:
-    st.error("Model assets not found!")
+    st.error("Missing AI Assets!")
 else:
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
 
-    files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
+    files = st.file_uploader("Upload GPR Data", type=["rad", "rd3"], accept_multiple_files=True)
 
     if len(files) == 2:
         rd3_f = next(f for f in files if f.name.endswith('.rd3'))
@@ -53,25 +53,29 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE PHASE-LOCK LOGIC ---
-        # Analyze the central vertical slice where the hyperbola apex is strongest
-        center_slice = roi_ready[:, 55:65]
-        # Cavities usually have a sharper 'white' peak (Soil -> Air)
-        polarity_score = np.max(center_slice) / (np.abs(np.min(center_slice)) + 1e-7)
+        # --- 3. THE "TIE-BREAKER" LOGIC ---
+        # 1. Feature Prep
+        imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
+        roi_norm = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
+        features = roi_norm.flatten(order='F')
+        features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
+        
+        # 2. SVM Prediction (Class 1=Cavity, 2=Brick, 3=Metal)
+        svm_res = model.predict(scaler.transform(features))[0]
 
-        # --- FINAL PRECISION CLASSIFICATION ---
-        if energy < 0.010:
+        # 3. Final Decision Logic
+        if energy < 0.0105:
             res, color = "NO TARGET ⚪", "#484f58"
         elif energy > 0.024:
             res, color = "METAL PIPE ⚙️", "#da3633"
         else:
-            # Tie-breaker for Brick vs Cavity
-            # If the reflection is "Positive-Heavy" (Bright peak), it's a Cavity.
-            # If it's more balanced or Darker, it's a Brick.
-            if polarity_score > 1.02: 
-                res, color = "CAVITY (VOID) ✅", "#238636"
-            else:
+            # We use a "Confidence Weight"
+            # If energy is above 0.015, it is ALMOST ALWAYS a Brick in your data.
+            # If energy is below 0.015, we trust the SVM's texture analysis.
+            if energy >= 0.0152:
                 res, color = "BRICK / CONCRETE 🧱", "#d29922"
+            else:
+                res, color = "CAVITY (VOID) ✅", "#238636"
 
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -82,11 +86,6 @@ else:
             st.pyplot(fig)
 
         with col2:
-            st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Signal Energy", f"{energy:.4f}")
-            st.metric("Polarity Signature", f"{polarity_score:.3f}")
-            
-            # Show BEMD Features
-            imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-            roi_norm = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
-            st.image(mat2gray_python(roi_norm), caption="12,000 BEMD Features Processed")
+            st.markdown(f'<div style="padding:20px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:24px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
+            st.metric("Reflection Energy", f"{energy:.4f}")
+            st.image(mat2gray_python(roi_norm), caption="12,000 Normalized Features")
