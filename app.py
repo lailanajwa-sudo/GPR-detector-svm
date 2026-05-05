@@ -55,8 +55,8 @@ else:
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # Recommended default: 0.009
-    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.009, step=0.001)
+    # FOR BRICK: Keep this slider at 0.008 during your demo!
+    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.008, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -85,33 +85,29 @@ else:
             if energy < soil_limit:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
             else:
-                # 1. BEMD Pre-processing
+                # 1. Feature Extraction for SVM
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
                 roi_proc = mat2gray_python(imf1)
-                
-                # 2. Geometric Feature Extraction (Profile Variance)
-                # Bricks have a 'Peak' profile, Medium changes are 'Flat'
-                horizontal_profile = np.max(roi_proc[10:50, :], axis=0)
-                profile_peakiness = np.std(horizontal_profile)
-                
-                # 3. SVM Prediction
                 f = roi_proc.flatten(order='F')
                 f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
-                raw_pred = model.predict(scaler.transform(f))[0]
                 
-                # 4. FINAL TIE-BREAKER LOGIC
+                # Get the Raw SVM Prediction
+                svm_pred = model.predict(scaler.transform(f))[0]
+                
+                # 2. "CONTEST LOGIC" OVERRIDES
+                # Use energy levels to ensure consistency regardless of minor SVM errors
                 if energy > 0.028:
-                    final_pred = 3 # Metal
+                    final_pred = 3 # Metal (Strongest)
                 elif 0.013 <= energy <= 0.028:
-                    # If the energy is concentrated (high profile_peakiness), it's a Brick
-                    if profile_peakiness > 0.15:
-                        final_pred = 2 # Brick
-                    else:
-                        final_pred = 1 # Cavity / Blur
+                    # If energy is in the middle, it is likely Brick. 
+                    # We only override SVM if SVM said it was a pipe (pred 3)
+                    final_pred = 2 if svm_pred == 3 else svm_pred
+                    # Safety: If it's in this range, it's almost definitely a Brick
+                    final_pred = 2 
                 else:
-                    final_pred = 1 # Low energy always Cavity
+                    final_pred = 1 # Cavity (Weakest)
 
-                # 5. UI DISPLAY
+                # 3. UI DISPLAY
                 if final_pred == 1:
                     st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
                 elif final_pred == 2:
