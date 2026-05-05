@@ -34,12 +34,12 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-st.title("📡 GPR BEMD-SVM Intelligent Autonomous Classifier")
+# --- 2. MAIN APP ---
+st.title("📡 GPR BEMD-SVM Autonomous Classifier")
 
 if model is None:
-    st.error("AI Model files not found!")
+    st.error("AI Model assets not found!")
 else:
-    # Remove thresholds - just use standard ROI selection
     st.sidebar.header("🕹️ Position Selection")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
@@ -53,24 +53,28 @@ else:
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        # 1. Automatic Feature Extraction (12,000 Pixels)
-        roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
+        # 1. Extraction
+        roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
+        roi_ready = matlab_resize_manual(roi_raw, (100, 120))
+        
+        # 2. THE SMART FIX: Z-Score Normalization
+        # This strips away the "brightness" that causes Metal-Pipe bias
+        # and forces the SVM to see the SHAPE of the 12,000 features.
         imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-        roi_proc = mat2gray_python(imf1)
+        roi_norm = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
         
-        # 2. SMART GEOMETRY CHECK (No sliders)
-        # Calculate vertical "peakedness" - Soil layers are flat, hyperbolas are peaked
-        peak_score = np.mean(kurtosis(roi_ready, axis=0))
-        is_object = peak_score > -0.5 # Statistics-based detection
-        
-        # 3. SVM PREDICTION
-        features = roi_proc.flatten(order='F')
+        # 3. STATISTICAL GUARD (Detects if it's a target or just flat soil)
+        # Real hyperbolas have higher kurtosis (peakedness) than horizontal bars
+        k_val = np.mean(kurtosis(roi_norm, axis=0))
+        energy = np.std(roi_ready)
+        is_target = k_val > -0.4 and energy > 0.009
+
+        # 4. SVM PREDICTION
+        features = roi_norm.flatten(order='F') # Exact MATLAB order
         features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
-        scaled_f = scaler.transform(features)
         
-        # Get raw probabilities/decision scores if your SVM supports it, 
-        # otherwise use standard prediction
-        prediction = model.predict(scaled_f)[0]
+        # Predict using the 12,000 processed features
+        prediction = model.predict(scaler.transform(features))[0]
 
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -82,13 +86,12 @@ else:
             st.pyplot(fig)
 
         with col2:
-            st.subheader("AI Prediction")
+            st.subheader("AI System Output")
             
-            # Smart logic: If statistics say it's a flat bar, ignore it.
-            # Otherwise, trust the SVM's classification of the 12,000 features.
-            if not is_object or np.std(roi_ready) < 0.008:
-                res, color = "SCANNING... ⚪", "#484f58"
+            if not is_target:
+                res, color = "NO TARGET (SOIL) ⚪", "#484f58"
             else:
+                # Trust the SVM's decision on the normalized 12,000 features
                 if prediction == 1:
                     res, color = "CAVITY (VOID) ✅", "#238636"
                 elif prediction == 2:
@@ -96,6 +99,7 @@ else:
                 else:
                     res, color = "METAL PIPE ⚙️", "#da3633"
 
-            st.markdown(f'<div style="padding:20px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:24px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Confidence Score (Kurtosis)", f"{peak_score:.2f}")
-            st.image(roi_proc, caption="12,000 BEMD Features", use_container_width=True)
+            st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
+            st.metric("Hyperbola Peakedness (Kurtosis)", f"{k_val:.2f}")
+            st.metric("Signal Energy", f"{energy:.4f}")
+            st.image(mat2gray_python(roi_norm), caption="12,000 Normalized BEMD Features", use_container_width=True)
