@@ -7,3 +7,5 @@ joblib
 openpyxl
 opencv-python-headless
 Pillow
+scipy
+scikit-image
