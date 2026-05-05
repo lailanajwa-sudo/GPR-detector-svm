@@ -54,21 +54,23 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE CALIBRATED PHASE CHECK ---
+        # --- 3. THE SMART PHASE CHECK ---
         apex_idx = np.argmax(np.std(roi_ready, axis=0))
         waveform = roi_ready[:, apex_idx]
+        # Find peak intensity relative to grayscale 0.5
         first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
         
-        # SWAPPED LOGIC: Mapping specifically to your data's phase response
-        # If your Brick was showing as Cavity, it means your Cavity is actually Darker at the apex.
+        # Calibrated Phase Logic
         is_cavity_phase = first_peak <= 0.50 
 
-        # --- 4. DECISION ENGINE ---
-        if energy < 0.010:
-            res, color = "NO TARGET ⚪", "#484f58"
+        # --- 4. THE ENERGY GATE (Fixes the BG/Cavity Mix) ---
+        # Increased threshold to 0.0125 to filter out background 'noise'
+        if energy < 0.0125:
+            res, color = "NO TARGET (SOIL) ⚪", "#484f58"
         elif energy > 0.026:
             res, color = "METAL PIPE ⚙️", "#da3633"
         else:
+            # Only classify if we have a real target reflection
             if is_cavity_phase:
                 res, color = "CAVITY (VOID) ✅", "#238636"
             else:
@@ -85,8 +87,8 @@ else:
 
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Signal Energy", f"{energy:.4f}")
-            st.write("Phase Signature: " + ("Type A (Cavity)" if is_cavity_phase else "Type B (Solid)"))
+            st.metric("Signal Intensity", f"{energy:.4f}")
+            st.write("Detection: " + ("Target Found" if energy >= 0.0125 else "Scanning Soil..."))
             
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-            st.image(mat2gray_python(imf1), caption="12,000 BEMD Feature Analysis")
+            st.image(mat2gray_python(imf1), caption="12,000 BEMD Feature Map")
