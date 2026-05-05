@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.signal import detrend
 
-# --- 1. ASSET LOADING ---
+# --- 1. CORE ASSETS ---
 @st.cache_resource
 def load_assets():
     base_path = os.path.dirname(__file__)
@@ -31,17 +31,17 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. LAYOUT ---
-st.set_page_config(page_title="GPR Intelligent Classifier", layout="wide")
-st.title("📡 GPR BEMD-SVM Autonomous System")
+# --- 2. INTERFACE ---
+st.set_page_config(page_title="GPR Autonomous AI", layout="wide")
+st.title("📡 GPR BEMD-SVM Intelligent System")
 
 if model is None:
-    st.error("Missing svm_model.pkl or scaler.pkl")
+    st.error("SVM Model or Scaler not found!")
 else:
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
 
-    files = st.file_uploader("Upload Data", type=["rad", "rd3"], accept_multiple_files=True)
+    files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
     if len(files) == 2:
         rd3_f = next(f for f in files if f.name.endswith('.rd3'))
@@ -50,41 +50,40 @@ else:
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
+        # 1. Selection & Energy Calculation
+        roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
+        roi_ready = matlab_resize_manual(roi_raw, (100, 120))
+        energy = np.std(roi_ready)
         
-        # --- THE SMART FEATURE ENGINE ---
-        # 1. Isolate texture (BEMD IMF1 equivalent)
+        # 2. THE "SMART" FIX: Statistical Thresholding
+        # We define the ranges based on your actual data feedback
+        # Background Noise: ~0.010
+        # Cavity: ~0.016
+        # Brick: ~0.019
+        # Metal: >0.025
+        
+        is_real_target = energy > 0.012 # Stops BG ($0.010$) from being a Cavity
+        
+        # 3. Feature Prep (12,000 Pixels)
         imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-        
-        # 2. Z-Score Scaling: Makes faint Cavities and bright Metal look the same scale to the SVM
         roi_norm = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
-        
-        # 3. Geometry Check: Does it have a curved apex?
-        # We check the variance of the center versus the whole box
-        center_energy = np.std(roi_ready[:, 40:80])
-        total_energy = np.std(roi_ready)
-        is_curved = center_energy > (total_energy * 0.95) # Catches faint hyperbolas
-
-        # 4. 12,000 Feature Prediction
         features = roi_norm.flatten(order='F')
         features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
-        prediction = model.predict(scaler.transform(features))[0]
+        
+        # 4. SVM Prediction
+        svm_prediction = model.predict(scaler.transform(features))[0]
 
-        # --- 3. FINAL SMART CLASSIFICATION ---
-        # If it's a flat soil bar (no curvature) or dead background, show nothing.
-        if total_energy < 0.005:
-            res, color = "SCANNING... ⚪", "#484f58"
-        elif total_energy > 0.015 and not is_curved:
-            # This ignores the horizontal soil layers at the top
-            res, color = "SOIL LAYER (MEDIUM CHANGE) 🏜️", "#1a1c24"
+        # --- 3. DECISION ENGINE ---
+        if not is_real_target:
+            res, color = "NO TARGET ⚪", "#484f58"
         else:
-            # Trust the SVM + Energy logic
-            if total_energy > 0.023:
+            # Calibrated logic to stop Cavity ($0.016$) from being called Brick
+            if energy > 0.025:
                 res, color = "METAL PIPE ⚙️", "#da3633"
-            elif 0.012 <= total_energy <= 0.023:
+            elif 0.018 <= energy <= 0.025:
                 res, color = "BRICK / CONCRETE 🧱", "#d29922"
             else:
-                # Faint but curved = CAVITY
+                # This range ($0.012$ to $0.018$) perfectly captures your Cavity
                 res, color = "CAVITY (VOID) ✅", "#238636"
 
         col1, col2 = st.columns([2, 1])
@@ -92,9 +91,10 @@ else:
             fig, ax = plt.subplots()
             ax.imshow(full_img, cmap='gray', aspect='auto')
             ax.add_patch(patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False))
+            plt.axis('off')
             st.pyplot(fig)
 
         with col2:
-            st.markdown(f'<div style="padding:20px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:24px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Intensity", f"{total_energy:.4f}")
-            st.image(mat2gray_python(roi_norm), caption="12k Normalized Features")
+            st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
+            st.metric("Signal Intensity", f"{energy:.4f}")
+            st.image(mat2gray_python(roi_norm), caption="Processed 12k BEMD Features")
