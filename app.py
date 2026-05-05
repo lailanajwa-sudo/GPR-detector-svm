@@ -54,32 +54,28 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE "TAIL RATIO" SMART CHECK ---
-        # Find the apex (strongest column)
+        # --- 3. THE SMART PHASE-POLARITY CHECK ---
+        # 1. Find the Apex
         apex_idx = np.argmax(np.std(roi_ready, axis=0))
-        
-        # Center Energy (the peak of the hyperbola)
-        center_energy = np.std(roi_ready[:, max(0, apex_idx-5):min(120, apex_idx+5)])
-        
-        # Tail Energy (the sides of the hyperbola)
-        tail_energy = (np.std(roi_ready[:, :20]) + np.std(roi_ready[:, 100:])) / 2
-        
-        # Solid objects (Bricks) have stronger 'tails' than hollow ones (Cavities)
-        tail_ratio = tail_energy / (center_energy + 1e-7)
+        # 2. Extract the vertical waveform at the apex
+        waveform = roi_ready[:, apex_idx]
+        # 3. Find the first major peak (the start of the hyperbola)
+        first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
+        # Cavities (Air) have a WHITE peak (higher than 0.5 in grayscale)
+        # Bricks (Solid) have a DARK peak (lower than 0.5 in grayscale)
+        is_cavity_phase = first_peak > 0.51
 
         # --- 4. DECISION ENGINE ---
-        if energy < 0.0105:
+        if energy < 0.010:
             res, color = "NO TARGET ⚪", "#484f58"
         elif energy > 0.026:
             res, color = "METAL PIPE ⚙️", "#da3633"
         else:
-            # If the tail ratio is high, the hyperbola is "strong and solid" -> BRICK
-            # If the tail ratio is low, it's "faint and hollow" -> CAVITY
-            # 0.65 is the smart split point for your data
-            if tail_ratio > 0.65:
-                res, color = "CONCRETE / BRICK 🧱", "#d29922"
-            else:
+            # Physics-based decision
+            if is_cavity_phase:
                 res, color = "CAVITY (VOID) ✅", "#238636"
+            else:
+                res, color = "BRICK / CONCRETE 🧱", "#d29922"
 
         # --- 5. DISPLAY ---
         col1, col2 = st.columns([2, 1])
@@ -92,9 +88,9 @@ else:
 
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Total Signal Strength", f"{energy:.4f}")
-            st.metric("Structure Density (Tail Ratio)", f"{tail_ratio:.4f}")
+            st.metric("Signal Energy", f"{energy:.4f}")
+            st.write("Phase Detection: " + ("Positive (Air)" if is_cavity_phase else "Negative (Solid)"))
             
-            # BEMD Image for the 12k features
+            # BEMD Image
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
             st.image(mat2gray_python(imf1), caption="12,000 BEMD Feature Analysis")
