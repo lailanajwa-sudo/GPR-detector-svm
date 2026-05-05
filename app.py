@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from scipy.signal import detrend
 
 # --- 1. UI SETUP ---
-st.set_page_config(page_title="GPR Intelligent Classifier", layout="wide")
+st.set_page_config(page_title="GPR Intelligent Classifier Pro", layout="wide")
 
 st.markdown("""
     <style>
@@ -15,7 +15,7 @@ st.markdown("""
     .stMetric { background-color: #1a1c24; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
     .result-card { 
         padding: 25px; border-radius: 15px; color: white; font-weight: bold; 
-        text-align: center; font-size: 32px; margin-bottom: 15px;
+        text-align: center; font-size: 32px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -45,18 +45,18 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. MAIN APP ---
-st.title("📡 GPR BEMD-SVM Intelligent Classifier")
+# --- 2. MAIN INTERFACE ---
+st.title("📡 GPR Intelligent Subsurface Classifier")
 
 if model is None:
-    st.error("Model assets not detected.")
+    st.error("Model assets missing!")
 else:
     st.sidebar.header("🕹️ Controls")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # ADJUST THIS: 0.010 is usually the sweet spot for your data
-    soil_limit = st.sidebar.slider("Background Noise Floor", 0.001, 0.030, 0.010, step=0.001)
+    # Recommended: 0.009
+    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.009, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -64,8 +64,6 @@ else:
         rd3_f = next(f for f in files if f.name.endswith('.rd3'))
         raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
         matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
-        
-        # Standard GPR DC removal
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
@@ -87,42 +85,39 @@ else:
             if energy < soil_limit:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
             else:
-                # --- 12,000 BEMD FEATURE EXTRACTION ---
-                # Detrending isolates the first IMF texture
+                # 1. Feature Extraction (12,000 BEMD)
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
+                roi_proc = mat2gray_python(imf1)
+                f = roi_proc.flatten(order='F')
+                f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
                 
-                # Normalizing to remove absolute intensity bias
-                roi_proc = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
+                # 2. Gradient Sharpness (Tie-Breaker)
+                # Bricks have a higher vertical gradient at the apex
+                v_grad = np.max(np.abs(np.diff(roi_ready, axis=0)))
                 
-                # Flattening Column-Major (Parity with MATLAB)
-                features = roi_proc.flatten(order='F')
-                features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
+                # 3. SVM Prediction
+                svm_pred = model.predict(scaler.transform(f))[0]
                 
-                # SVM Prediction
-                # We'll use decision_function if predict is stuck on one class
-                prediction = model.predict(scaler.transform(features))[0]
+                # 4. FINAL CLASSIFICATION LOGIC
+                if energy > 0.028:
+                    final_pred = 3 # Metal
+                elif 0.013 <= energy <= 0.028:
+                    # TIE BREAKER: If SVM says Brick OR Gradient is sharp, it's a Brick.
+                    if svm_pred == 2 or v_grad > 0.15:
+                        final_pred = 2 # Brick
+                    else:
+                        final_pred = 1 # Cavity
+                else:
+                    final_pred = 1 # Very weak signal is Cavity
 
-                # --- HYBRID RECOGNITION LOGIC ---
-                # If energy is low (0.012), it's physically impossible for it to be a Metal Pipe
-                # We use the energy as a "reality check" for the SVM
-                
-                final_output = prediction
-                
-                if energy < 0.013:
-                    final_output = 1 # Force Cavity (Weak signal)
-                elif 0.013 <= energy < 0.024:
-                    final_output = 2 # Force Brick (Medium signal)
-                elif energy >= 0.024:
-                    # Only allow Metal Pipe if signal is actually strong
-                    final_output = 3 
-
-                # --- DISPLAY ---
-                if final_output == 1:
+                # 5. UI DISPLAY
+                if final_pred == 1:
                     st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
-                elif final_output == 2:
+                elif final_pred == 2:
                     st.markdown('<div class="result-card" style="background-color: #d29922; color: #1a1c24;">BRICK / CONCRETE 🧱</div>', unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="result-card" style="background-color: #da3633;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
 
-            st.metric("Reflection Energy Intensity", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="Processed BEMD ROI", use_container_width=True)
+            st.metric("Reflection Energy", f"{energy:.4f}")
+            st.metric("Sharpness Gradient", f"{v_grad:.4f}")
+            st.image(mat2gray_python(roi_ready), caption="BEMD Processing ROI", use_container_width=True)
