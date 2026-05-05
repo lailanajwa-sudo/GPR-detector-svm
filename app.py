@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from PIL import Image
 from scipy.signal import detrend
 
-# --- 1. ASSET LOADING ---
+# --- 1. MUAT TURUN MODEL ---
 @st.cache_resource
 def load_assets():
     base_path = os.path.dirname(__file__)
@@ -21,41 +21,43 @@ def load_assets():
 
 model, scaler = load_assets()
 
-# --- 2. FUNGSI PERSIS MATLAB (mat2gray & BEMD Feature) ---
+# --- 2. FUNGSI MATLAB (mat2gray & BEMD Feature) ---
 def mat2gray_python(img):
     """Meniru fungsi mat2gray MATLAB"""
     min_val = np.min(img)
     max_val = np.max(img)
     if max_val - min_val > 0:
         return (img - min_val) / (max_val - min_val)
-    return img
+    return np.zeros_like(img)
 
 def get_bemd_features(roi_matrix):
-    # MATLAB anda ambil IMF_1. Secara matematik, IMF_1 dalam BEMD 
-    # berfungsi sebagai filter residu frekuensi tinggi.
-    # Kita gunakan detrending 2D untuk simulasi IMF_1 yang paling dekat.
+    # MATLAB anda melakukan detrending melalui fungsi bemd()
+    # Kita simulasikan IMF1 dengan membuang trend linear pada ROI
     imf1_sim = detrend(detrend(roi_matrix, axis=0), axis=1)
     
-    # MATLAB: IMF_1(:) -> Ini adalah Column-Major flattening
-    # Kita guna order='F' (Fortran/MATLAB order)
-    return imf1_sim.flatten(order='F').reshape(1, -1)
+    # PENTING: Kod MATLAB anda menggunakan mat2gray sekali lagi pada IMF_1
+    # Ini memastikan semua data (Cavity/Metal) berada pada skala 0-1
+    imf1_gray = mat2gray_python(imf1_sim)
+    
+    # MATLAB: IMF_1(:) -> Column-Major flattening
+    return imf1_gray.flatten(order='F').reshape(1, -1)
 
-# --- 3. UI UTAMA ---
-st.set_page_config(layout="wide", page_title="GPR BEMD-SVM Precise")
-st.title("📡 GPR Classifier (MATLAB Logic Synced)")
+# --- 3. ANTARAMUKA PENGGUNA ---
+st.set_page_config(layout="wide")
+st.title("📡 GPR BEMD-SVM (MATLAB Synced)")
 
 st.sidebar.header("ROI Alignment")
-v_pos = st.sidebar.slider("Vertical (Depth)", 0, 212, 115)
-h_pos = st.sidebar.slider("Horizontal (Trace)", 0, 450, 210)
+v_pos = st.sidebar.slider("Kedalaman (Vertical)", 0, 212, 115)
+h_pos = st.sidebar.slider("Trace (Horizontal)", 0, 450, 210)
 
-uploaded_files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("Muat naik .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
 if len(uploaded_files) == 2 and model is not None:
     rad_file = next((f for f in uploaded_files if f.name.endswith('.rad')), None)
     rd3_file = next((f for f in uploaded_files if f.name.endswith('.rd3')), None)
 
     if rad_file and rd3_file:
-        # A. Parse Header
+        # A. Baca Header
         samples = 312
         try:
             content = rad_file.getvalue().decode("utf-8")
@@ -64,39 +66,38 @@ if len(uploaded_files) == 2 and model is not None:
                     samples = int(line.split(':')[1].strip())
         except: pass
         
-        # B. Read RD3
+        # B. Baca RD3
         raw = np.frombuffer(rd3_file.read(), dtype=np.int16).astype(np.float64)
         traces = len(raw) // samples
         
         if traces > 0:
-            # Bentuk matriks (Wajib 'F' untuk MALA data)
             matrix = raw[:samples*traces].reshape((samples, traces), order='F')
             
-            # --- C. PROSES PERSIS MATLAB ---
-            # 1. Background removal
+            # --- C. PROSES PENYELARASAN MATLAB ---
+            # 1. Background removal (Sama seperti readmala)
             matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
-            # 2. mat2gray (Penting: Ikut kod MATLAB anda)
+            # 2. mat2gray pertama (Baris 11 & 49 & 89 dalam kod MATLAB anda)
             matrix_gray = mat2gray_python(matrix_clean)
             
-            # D. ROI Extraction (100x120)
+            # D. Potong ROI (100x120)
             y1, x1 = min(v_pos, samples-100), min(h_pos, traces-120)
             roi_raw = matrix_gray[y1:y1+100, x1:x1+120]
             
-            # Resize ke 100x120 (Sama seperti imresize dalam MATLAB anda)
+            # E. Resize (Sama seperti imresize dalam MATLAB anda)
             img = Image.fromarray(roi_raw).resize((120, 100), Image.BICUBIC)
             roi_ready = np.array(img)
             
-            # E. Extract Features (Simulasi IMF_1 + Flattening order='F')
+            # F. Ekstrak Ciri (Simulasi IMF_1 + mat2gray + Flattening order='F')
             bemd_feat = get_bemd_features(roi_ready)
             
-            # F. SVM Prediction
+            # G. Ramalan SVM
             scaled_input = scaler.transform(bemd_feat)
             prediction = model.predict(scaled_input)[0]
             
             labels = {1: "Cavity", 2: "Brick", 3: "Metal Pipe"}
             result = labels.get(prediction, "Unknown")
             
-            # G. Visual
+            # H. Paparan Visual
             col1, col2 = st.columns([2, 1])
             with col1:
                 fig, ax = plt.subplots()
@@ -106,16 +107,15 @@ if len(uploaded_files) == 2 and model is not None:
             
             with col2:
                 if result == "Cavity":
-                    st.success(f"### HASIL: {result} ✅")
+                    st.success(f"### KEPUTUSAN: {result} ✅")
                 elif result == "Brick":
-                    st.warning(f"### HASIL: {result} 🧱")
+                    st.warning(f"### KEPUTUSAN: {result} 🧱")
                 else:
-                    st.error(f"### HASIL: {result} ⚙️")
+                    st.error(f"### KEPUTUSAN: {result} ⚙️")
                 
-                st.write("**Debug Info:**")
-                st.write(f"Shape Features: {bemd_feat.shape}") # Mesti (1, 12000)
-                
+                # Plot feature untuk pengesahan visual
+                st.write("**Visual Ciri BEMD (Input SVM):**")
                 fig2, ax2 = plt.subplots()
-                ax2.imshow(roi_ready, cmap='jet')
-                ax2.set_title("Input ROI (Setelah mat2gray)")
+                # Kita reshape semula untuk tengok tekstur yang dihantar ke SVM
+                ax2.imshow(bemd_feat.reshape(100, 120, order='F'), cmap='jet')
                 st.pyplot(fig2)
