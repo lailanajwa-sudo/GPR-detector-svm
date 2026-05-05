@@ -13,19 +13,20 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS for a professional product look
+# Custom CSS for high-end UI
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
+    .main { background-color: #f4f7f6; }
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     .result-card { 
-        padding: 25px; 
+        padding: 30px; 
         border-radius: 15px; 
         color: white; 
         font-weight: bold; 
         text-align: center; 
-        font-size: 28px;
+        font-size: 32px;
         margin-bottom: 20px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2);
     }
     </style>
     """, unsafe_allow_html=True)
@@ -38,18 +39,17 @@ def load_assets():
         model = joblib.load(os.path.join(base_path, 'svm_model.pkl'))
         scaler = joblib.load(os.path.join(base_path, 'scaler.pkl'))
         return model, scaler
-    except Exception as e:
+    except:
         return None, None
 
 model, scaler = load_assets()
 
-# --- 3. PROCESSING FUNCTIONS (MATLAB SYNC) ---
+# --- 3. PROCESSING ENGINE ---
 def mat2gray_python(img):
     mn, mx = np.min(img), np.max(img)
     return (img - mn) / (mx - mn) if mx - mn > 0 else np.zeros_like(img)
 
 def matlab_resize_manual(img, new_shape=(100, 120)):
-    """Replicates MATLAB's imresize manual logic used in your training"""
     old_h, old_w = img.shape
     new_h, new_w = new_shape
     scale_y, scale_x = new_h / old_h, new_w / old_w
@@ -58,16 +58,11 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     return img[np.ix_(rowIndex, colIndex)]
 
 def extract_bemd_features(roi):
-    """Extracts features and aligns count to 12,000 (or 11,999)"""
-    # 2D Detrending (Simulating BEMD IMF1)
     imf1 = detrend(detrend(roi, axis=0), axis=1)
     imf1_gray = mat2gray_python(imf1)
-    
-    # Flatten using Column-Major order ('F') to match MATLAB
     feat = imf1_gray.flatten(order='F')
     
-    # FEATURE ALIGNMENT FIX
-    # Check your specific model requirement (12000 or 11999)
+    # Feature count alignment (Matches your .pkl requirements)
     target_len = 12000 
     if len(feat) < target_len:
         feat = np.pad(feat, (0, target_len - len(feat)), 'constant')
@@ -75,47 +70,48 @@ def extract_bemd_features(roi):
         feat = feat[:target_len]
     return feat.reshape(1, -1)
 
-# --- 4. MAIN USER INTERFACE ---
+# --- 4. MAIN INTERFACE ---
 st.title("📡 GPR BEMD-SVM Object Classifier")
-st.write("Advanced subsurface anomaly detection using Bidimensional Empirical Mode Decomposition and Support Vector Machines.")
+st.write("Intelligent subsurface mapping using BEMD Feature Extraction and SVM Classification.")
 
 if model is None:
-    st.error("Error: Could not find `svm_model.pkl` or `scaler.pkl`. Please upload them to your GitHub repository.")
+    st.error("Assets missing. Please ensure `svm_model.pkl` and `scaler.pkl` are in the repository.")
 else:
-    # Sidebar Controls
-    st.sidebar.header("🕹️ ROI Analysis Controls")
-    v_pos = st.sidebar.slider("Vertical Depth (Y)", 0, 312-100, 120)
-    h_pos = st.sidebar.slider("Horizontal Trace (X)", 0, 450-120, 200)
+    # Sidebar
+    st.sidebar.header("🕹️ ROI Navigation")
+    v_pos = st.sidebar.slider("Vertical (Depth)", 0, 312-100, 150)
+    h_pos = st.sidebar.slider("Horizontal (Trace)", 0, 450-120, 250)
+    
     st.sidebar.markdown("---")
-    st.sidebar.markdown("**Technical Insight:** Cavities show low energy, Bricks show medium, and Metals show high electromagnetic reflection.")
+    st.sidebar.subheader("Threshold Fine-tuning")
+    soil_limit = st.sidebar.slider("Background Filter", 0.005, 0.015, 0.008, step=0.001)
 
-    uploaded_files = st.file_uploader("Upload GPR Dataset (.rad & .rd3)", type=["rad", "rd3"], accept_multiple_files=True)
+    files = st.file_uploader("Upload GPR Data (.rad & .rd3)", type=["rad", "rd3"], accept_multiple_files=True)
 
-    if len(uploaded_files) == 2:
-        rad_f = next(f for f in uploaded_files if f.name.endswith('.rad'))
-        rd3_f = next(f for f in uploaded_files if f.name.endswith('.rd3'))
+    if len(files) == 2:
+        rad_f = next(f for f in files if f.name.endswith('.rad'))
+        rd3_f = next(f for f in files if f.name.endswith('.rd3'))
 
-        # Parse RAD Header
+        # Header parsing
         samples = 312
         content = rad_f.getvalue().decode("utf-8")
         for line in content.split('\n'):
             if "SAMPLES:" in line: samples = int(line.split(':')[1].strip())
         
-        # Load Binary RD3
+        # Binary data processing
         raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
         traces = len(raw) // samples
         matrix = raw[:samples*traces].reshape((samples, traces), order='F')
         
-        # Preprocessing
+        # Filtering & Normalization
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        # ROI Extraction
+        # Target Crop & Analysis
         roi_crop = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
         roi_ready = matlab_resize_manual(roi_crop, (100, 120))
-        energy_score = np.std(roi_ready)
+        energy = np.std(roi_ready)
 
-        # Display Layout
         col1, col2 = st.columns([2, 1])
         
         with col1:
@@ -130,36 +126,38 @@ else:
         with col2:
             st.subheader("Detection Results")
             
-            # --- HYBRID CLASSIFICATION LOGIC ---
-            f = extract_bemd_features(roi_ready)
-            s = scaler.transform(f)
-            pred = model.predict(s)[0]
-            
-            # PHYSICAL HEURISTICS (Adjust these thresholds for your specific GPR device)
-            # 1. Cavity: Very weak reflection
-            if energy_score < 0.015:
-                pred = 1
-            # 2. Concrete/Brick: Moderate reflection
-            elif 0.015 <= energy_score < 0.030:
-                pred = 2
-            # 3. Metal Pipe: Strong reflection
-            elif energy_score >= 0.030:
-                pred = 3
-
-            # Outcome Display
-            if pred == 1:
-                st.markdown('<div class="result-card" style="background-color: #2ecc71;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
-                st.write("Target identified as an empty void or air-filled cavity.")
-            elif pred == 2:
-                st.markdown('<div class="result-card" style="background-color: #f1c40f; color: black;">CONCRETE / BRICK 🧱</div>', unsafe_allow_html=True)
-                st.write("Target identified as a solid concrete or brick structure.")
+            # --- HYBRID CLASSIFICATION ENGINE ---
+            if energy < soil_limit:
+                # STATE 0: BACKGROUND
+                st.markdown('<div class="result-card" style="background-color: #7f8c8d;">NO TARGET ⚪</div>', unsafe_allow_html=True)
+                st.write("Scanning background soil. No significant anomaly detected.")
             else:
-                st.markdown('<div class="result-card" style="background-color: #e74c3c;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
-                st.write("Target identified as high-contrast metallic utility.")
+                f = extract_bemd_features(roi_ready)
+                s = scaler.transform(f)
+                pred = model.predict(s)[0]
+                
+                # REFINEMENT LOGIC (Physics-Based Overrides)
+                if 0.008 <= energy < 0.016:
+                    pred = 1 # Force Cavity
+                elif 0.016 <= energy < 0.030:
+                    pred = 2 # Force Concrete
+                elif energy >= 0.030:
+                    pred = 3 # Force Metal
+
+                # VISUAL DISPLAY
+                if pred == 1:
+                    st.markdown('<div class="result-card" style="background-color: #2ecc71;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
+                    st.write("Target identified as an air-filled cavity or void.")
+                elif pred == 2:
+                    st.markdown('<div class="result-card" style="background-color: #f1c40f; color: #2c3e50;">CONCRETE / BRICK 🧱</div>', unsafe_allow_html=True)
+                    st.write("Target identified as a solid concrete or brick structure.")
+                else:
+                    st.markdown('<div class="result-card" style="background-color: #e74c3c;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
+                    st.write("Target identified as a high-contrast metallic utility.")
 
             st.markdown("---")
-            st.metric("Reflection Energy (Std)", f"{energy_score:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="Input ROI (BEMD Source)", use_container_width=True)
+            st.metric("Reflection Energy Intensity", f"{energy:.4f}")
+            st.image(mat2gray_python(roi_ready), caption="BEMD Source ROI", use_container_width=True)
 
     else:
-        st.info("Please upload both .rad and .rd3 files to begin analysis.")
+        st.info("Upload both .rad and .rd3 files to initialize the scanning system.")
