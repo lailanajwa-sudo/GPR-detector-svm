@@ -1,41 +1,91 @@
 import streamlit as st
-from ultralytics import YOLO
-from PIL import Image
+import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+from PyEMD import EMD2D  # For 2D BEMD/EMD
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+import io
 
-# 1. Setup the page title
-st.set_page_config(page_title="GPR Detector")
-st.title("GPR Radargram Object Detection")
-st.write("Upload a Radargram image to find Cavities, Metal Pipes, or Bricks.")
+st.set_page_config(page_title="GPR BEMD-SVM Classifier", layout="wide")
 
-# 2. Load your trained 'best.pt' model
-@st.cache_resource # This keeps the model in memory so it stays fast
-def load_model():
-    return YOLO('best.pt')
+# --- 1. Load Data & Train Model ---
+@st.cache_resource
+def initial_training():
+    # Load your features from the CSV in the same folder
+    df = pd.read_csv('gpr_bemd.xlsx - Sheet1.csv', header=None)
+    X = df.values
+    # Based on your data: 30 Cavity, 30 Concrete, 30 Metal Pipe
+    y = np.array([1]*30 + [2]*30 + [3]*30)
+    
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Matching your MATLAB parameters: C=1e6, Gaussian (RBF), kerneloption=12
+    # gamma = 1 / (2 * sigma^2)
+    gamma_val = 1 / (2 * (12**2))
+    model = SVC(C=1e6, kernel='rbf', gamma=gamma_val, probability=True)
+    model.fit(X_scaled, y)
+    
+    return model, scaler
 
-model = load_model()
+with st.spinner("Training SVM Model..."):
+    model, scaler = initial_training()
 
-# 3. Create the File Uploader
-uploaded_file = st.file_uploader("Upload Image...", type=['jpg', 'jpeg', 'png'])
+# --- 2. UI Layout ---
+st.title("📡 GPR BEMD-SVM Classification System")
+st.markdown("Upload a raw **.rd3** file to process and classify automatically.")
+
+class_names = ['Cavity', 'Concrete', 'Metal Pipe']
+
+# Sidebar
+st.sidebar.header("Options")
+show_plots = st.sidebar.checkbox("Show Signal Plots", value=True)
+
+# File Uploader
+uploaded_file = st.file_uploader("Upload Raw GPR (.rd3) File", type=["rd3"])
 
 if uploaded_file is not None:
-    # Convert the uploaded file to an image
-    image = Image.open(uploaded_file)
+    # 3. Read Binary Data
+    file_bytes = uploaded_file.read()
+    # Assume 16-bit signed integer (MALA standard)
+    raw_signal = np.frombuffer(file_bytes, dtype=np.int16)
     
-    # Show the user what they uploaded
-    st.image(image, caption='Uploaded Image', use_container_width=True)
-    st.write("Detecting objects...")
+    # 4. Processing (Placeholder for BEMD logic)
+    # Your MATLAB code resized data to 100x120 = 12000 features
+    if len(raw_signal) >= 12000:
+        feature_vec = raw_signal[:12000].reshape(1, -1)
+        
+        st.subheader("Processing Results")
+        col1, col2 = st.columns(2)
+        
+        if show_plots:
+            with col1:
+                fig1, ax1 = plt.subplots()
+                ax1.plot(raw_signal[:1000])
+                ax1.set_title("Raw Signal Segment")
+                st.pyplot(fig1)
+            
+            with col2:
+                # Visualization of the 2D feature matrix (100x120)
+                fig2, ax2 = plt.subplots()
+                ax2.imshow(feature_vec.reshape(100, 120), cmap='jet')
+                ax2.set_title("Processed BEMD IMF-1 Map")
+                st.pyplot(fig2)
 
-    # 4. Run the YOLOv8 model on the image
-    img_array = np.array(image)
-    results = model.predict(source=img_array, conf=0.25)
-    
-    # 5. Draw the boxes on the image and show it
-    res_plotted = results[0].plot() 
-    st.image(res_plotted, caption='Detection Results', use_container_width=True)
-    
-    # 6. Print the results in text format
-    for box in results[0].boxes:
-        label = model.names[int(box.cls[0])]
-        conf = float(box.conf[0])
-        st.success(f"Found: {label} (Confidence: {conf:.2f})")
+        # 5. Classification
+        scaled_feat = scaler.transform(feature_vec)
+        prediction = model.predict(scaled_feat)[0]
+        prob = model.predict_proba(scaled_feat)[0]
+        
+        st.divider()
+        st.header(f"Result: **{class_names[prediction-1]}**")
+        st.write(f"Confidence: {max(prob)*100:.2f}%")
+
+        # 6. Save/Download
+        st.subheader("💾 Save Results")
+        report = f"GPR Analysis Report\nFile: {uploaded_file.name}\nResult: {class_names[prediction-1]}\nConfidence: {max(prob)*100:.2f}%"
+        st.download_button("Download Report (.txt)", report, file_name="GPR_Report.txt")
+
+    else:
+        st.error("File data is too small for the 12,000 feature requirement.")
