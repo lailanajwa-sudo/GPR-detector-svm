@@ -7,59 +7,48 @@ import matplotlib.pyplot as plt
 model = joblib.load('svm_model.pkl')
 scaler = joblib.load('scaler.pkl')
 
-st.title("📡 MALA GPR Analyzer")
+st.title("📡 MALA GPR Classifier")
 
-# User uploads BOTH files
-uploaded_files = st.file_uploader("Upload BOTH .rad and .rd3 files", type=["rad", "rd3"], accept_multiple_files=True)
+# The user must upload both because rd3 contains the actual data 
+uploaded_files = st.file_uploader("Upload .rad and .rd3 files", type=["rad", "rd3"], accept_multiple_files=True)
 
 if len(uploaded_files) == 2:
-    rad_file = None
-    rd3_file = None
+    rad_file = next(f for f in uploaded_files if f.name.endswith('.rad'))
+    rd3_file = next(f for f in uploaded_files if f.name.endswith('.rd3'))
 
-    # Identify which file is which
-    for f in uploaded_files:
-        if f.name.endswith('.rad'):
-            rad_file = f
-        if f.name.endswith('.rd3'):
-            rd3_file = f
+    # 1. Parse .rad file for Sample Count 
+    rad_content = rad_file.getvalue().decode("utf-8")
+    samples_per_trace = 312 # Default
+    for line in rad_content.split('\n'):
+        if "SAMPLES:" in line:
+            samples_per_trace = int(line.split(':')[1].strip())
+    
+    st.info(f"Header Detected: {samples_per_trace} samples per trace.")
 
-    if rad_file and rd3_file:
-        # 1. Read SAMPLES from .rad file
-        rad_content = rad_file.getvalue().decode("utf-8")
-        samples_val = 312 # Default from your provided rad file
-        for line in rad_content.split('\n'):
-            if "SAMPLES:" in line:
-                samples_val = int(line.split(':')[1].strip())
+    # 2. Process .rd3 Binary Data 
+    raw_data = np.frombuffer(rd3_file.read(), dtype=np.int16).astype(float)
+    num_traces = len(raw_data) // samples_per_trace
+    
+    if num_traces > 0:
+        # Reshape using 'F' order to keep traces vertical 
+        matrix = raw_data[:samples_per_trace*num_traces].reshape((samples_per_trace, num_traces), order='F')
         
-        st.info(f"Detected Samples per Trace: {samples_val}")
+        # Flip and Remove Background to show Hyperbolas 
+        matrix = np.flipud(matrix)
+        matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
 
-        # 2. Read Binary .rd3 file
-        raw_data = np.frombuffer(rd3_file.read(), dtype=np.int16).astype(float)
-        traces = len(raw_data) // samples_val
-        
-        if traces > 0:
-            # Reshape using 'F' order to keep traces vertical (as per readmala3.m)
-            matrix = raw_data[:samples_val*traces].reshape((samples_val, traces), order='F')
+        # 3. Predict (Match training features 100x120)
+        if num_traces >= 120:
+            feat_matrix = matrix_clean[:100, :120] 
+            features = feat_matrix.flatten().reshape(1, -1)
+            scaled_feat = scaler.transform(features)
+            pred = model.predict(scaled_feat)[0]
             
-            # Match MATLAB: Flip vertically and subtract mean (Background Removal)
-            matrix = np.flipud(matrix)
-            matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
+            labels = {1: "Cavity", 2: "Metal Pipe", 3: "Brick"}
+            st.success(f"### Result: {labels.get(pred, 'Unrecognizable')}")
 
-            # 3. Classification (Resize to 100x120 for SVM)
-            if traces >= 120:
-                feat_matrix = matrix_clean[:100, :120] 
-                features = feat_matrix.flatten().reshape(1, -1)
-                scaled_feat = scaler.transform(features)
-                pred = model.predict(scaled_feat)[0]
-                
-                labels = {1: "Cavity", 2: "Metal Pipe", 3: "Brick"}
-                st.success(f"### Detection Result: {labels.get(pred, 'Unrecognizable')}")
-
-            # 4. Visualization
-            fig, ax = plt.subplots(figsize=(10, 6))
-            limit = np.percentile(np.abs(matrix_clean), 98)
-            ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
-            ax.set_title(f"Radargram: {rd3_file.name}")
-            st.pyplot(fig)
-    else:
-        st.error("Please upload both the .rad and the .rd3 file together.")
+        # 4. Display Radargram
+        fig, ax = plt.subplots()
+        limit = np.percentile(np.abs(matrix_clean), 98)
+        ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
+        st.pyplot(fig)
