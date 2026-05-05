@@ -18,7 +18,8 @@ def load_assets():
 
 model, scaler = load_assets()
 
-st.title("📡 GPR Classification System")
+st.set_page_config(layout="wide")
+st.title("📡 GPR High-Precision Classification")
 
 # 2. Sidebar for ROI Controls
 st.sidebar.header("Target Selection")
@@ -42,39 +43,40 @@ if len(uploaded_files) == 2 and model is not None:
                 samples_val = int(line.split(':')[1].strip())
         
         # Read Binary RD3
-        raw_data = np.frombuffer(rd3_file.read(), dtype=np.int16).astype(float)
+        raw_data = np.frombuffer(rd3_file.read(), dtype=np.int16).astype(np.float64)
         num_traces = len(raw_data) // samples_val
         
         if num_traces > 0:
             # Create Matrix (order='F' matches MATLAB)
             matrix = raw_data[:samples_val*num_traces].reshape((samples_val, num_traces), order='F')
-            # Background Removal
+            # Background Removal (Mean subtraction)
             matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
             
             # 3. EXTRACTION & RESIZING
-            # Ensure ROI is within data bounds
             y1, x1 = min(v_start, samples_val-5), min(h_start, num_traces-5)
             y2, x2 = min(y1+box_h, samples_val), min(x1+box_w, num_traces)
             roi_raw = matrix_clean[y1:y2, x1:x2]
             
             if roi_raw.size > 0:
-                # Resize to 100x120 using PIL (safe alternative to cv2)
+                # Resize to 100x120 using PIL
                 img = Image.fromarray(roi_raw)
-                img_res = img.resize((120, 100), resample=Image.BILINEAR)
+                img_res = img.resize((120, 100), resample=Image.BICUBIC) # High quality resize
                 roi_resized = np.array(img_res)
                 
-                # --- RANGE SCALING FIX ---
-                # Your Excel data is roughly in the range [-0.035, 0.035].
-                # We map the live ROI to this exact range.
+                # --- HIGH PRECISION RANGE SCALING ---
+                # Your Excel training data max is 0.032574
+                target_limit = 0.032574
                 roi_min, roi_max = np.min(roi_resized), np.max(roi_resized)
+                
                 if roi_max - roi_min > 0:
-                    # Scale to [-1, 1] then multiply by 0.035
-                    roi_final = (((roi_resized - roi_min) / (roi_max - roi_min)) * 2 - 1) * 0.035
+                    # Map to exactly [-0.032574, +0.032574] with 6 decimal precision
+                    roi_final = (((roi_resized - roi_min) / (roi_max - roi_min)) * 2 - 1) * target_limit
+                    roi_final = np.round(roi_final, 6) # Force 6 decimal places
                 else:
                     roi_final = roi_resized
 
                 # 4. PREDICTION
-                # Flatten using 'F' order (MATLAB column-major)
+                # Flatten using 'F' order (column-major) to match the 12,000 feature vector
                 features = roi_final.flatten(order='F').reshape(1, -1)
                 scaled_feat = scaler.transform(features)
                 pred = model.predict(scaled_feat)[0]
@@ -88,27 +90,30 @@ if len(uploaded_files) == 2 and model is not None:
                 limit = np.percentile(np.abs(matrix_clean), 98)
 
                 with col1:
-                    st.subheader("Radargram View")
+                    st.subheader("Radargram Selection")
                     fig, ax = plt.subplots()
                     ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
-                    rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=2, edgecolor='r', facecolor='none')
+                    rect = patches.Rectangle((x1, y1), x2-x1, y2-y1, linewidth=2, edgecolor='red', facecolor='none')
                     ax.add_patch(rect)
                     st.pyplot(fig)
 
                 with col2:
-                    st.subheader("Classification Result")
+                    st.subheader("Classification")
                     if result == "Cavity":
-                        st.success(f"### {result} ✅")
+                        st.success(f"### Detected: {result} ✅")
                     elif result == "Brick":
-                        st.warning(f"### {result} 🧱")
+                        st.warning(f"### Detected: {result} 🧱")
                     else:
-                        st.info(f"### {result} ⚙️")
+                        st.info(f"### Detected: {result} ⚙️")
 
-                    # Use st.pyplot to avoid the Range Error
+                    # High Precision Stats
+                    st.write(f"**ROI Stats (6 Decimals):**")
+                    st.code(f"Max: {np.max(roi_final):.6f}\nMin: {np.min(roi_final):.6f}\nMean: {np.mean(roi_final):.6f}")
+
+                    # ROI Preview
                     fig2, ax2 = plt.subplots()
                     ax2.imshow(roi_final, cmap='gray', aspect='auto')
-                    ax2.set_title("Input to SVM (Scaled)")
+                    ax2.set_title("Input Sample (Resized/Normalized)")
                     st.pyplot(fig2)
-                    st.write(f"Value Range: {np.min(roi_final):.3f} to {np.max(roi_final):.3f}")
             else:
-                st.error("ROI selection is invalid.")
+                st.error("Invalid ROI Selection")
