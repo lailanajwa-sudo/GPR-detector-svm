@@ -1,7 +1,6 @@
-ultralytics
 streamlit
-streamlit-canvas
-opencv-python-headless
-pillow
-numpy
 pandas
+numpy
+scikit-learn
+EMD-signal
+matplotlib
