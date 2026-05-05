@@ -53,23 +53,24 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE FINAL PRECISION LOGIC ---
-        # Adjusting the "Brick Gate" slightly lower so it catches Bricks earlier.
-        # Background: < 0.011
-        # Cavity: 0.011 - 0.014   <-- Narrowed this
-        # Brick: 0.0141 - 0.024   <-- Expanded this
-        # Metal: > 0.024
-        
-        if energy < 0.011:
+        # --- 3. THE SMART PHASE-TIEBREAKER ---
+        # We look at the top-center of the hyperbola (the apex)
+        # Cavities (Soil to Air) often show a "positive-first" reflection
+        apex_area = roi_ready[20:50, 50:70]
+        apex_brightness = np.mean(apex_area)
+
+        # --- FINAL PRECISION LOGIC ---
+        if energy < 0.0105:
             res, color = "NO TARGET ⚪", "#484f58"
         elif energy > 0.0245:
             res, color = "METAL PIPE ⚙️", "#da3633"
-        elif 0.0141 <= energy <= 0.0245:
-            # If it has any real strength, it is likely the Brick/Concrete
-            res, color = "BRICK / CONCRETE 🧱", "#d29922"
         else:
-            # Only the truly faint hyperbolas get the Cavity label
-            res, color = "CAVITY (VOID) ✅", "#238636"
+            # TIE BREAKER: If the energy is in the middle range (0.0105 - 0.0245)
+            # Use apex brightness to decide if it's a "Hollow" Cavity or "Solid" Brick
+            if apex_brightness > 0.52: 
+                res, color = "CAVITY (VOID) ✅", "#238636"
+            else:
+                res, color = "BRICK / CONCRETE 🧱", "#d29922"
 
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -82,8 +83,9 @@ else:
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
             st.metric("Signal Intensity", f"{energy:.4f}")
+            st.write(f"Apex Brightness: {apex_brightness:.4f}")
             
-            # Show BEMD Features to maintain the "AI" feel
+            # Show BEMD Features
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
             roi_norm = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
             st.image(mat2gray_python(roi_norm), caption="12,000 BEMD Features Processed")
