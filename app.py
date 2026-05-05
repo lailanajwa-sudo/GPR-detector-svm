@@ -3,53 +3,51 @@ import numpy as np
 import joblib
 import matplotlib.pyplot as plt
 
-# 1. Load trained assets
-model = joblib.load('svm_model.pkl')
-scaler = joblib.load('scaler.pkl')
+# 1. Load trained model
+@st.cache_resource
+def load_assets():
+    model = joblib.load('svm_model.pkl')
+    scaler = joblib.load('scaler.pkl')
+    return model, scaler
 
-st.title("📡 Mala GPR Hyperbolic Reconstruction")
+model, scaler = load_assets()
+
+st.title("📡 GPR Hyperbolic Reconstruction")
 
 uploaded_file = st.file_uploader("Upload .rd3 file", type=["rd3"])
 
 if uploaded_file:
-    # Read binary trace-by-trace
+    # Read binary data (int16 is standard for Mala RD3)
     raw_data = np.frombuffer(uploaded_file.read(), dtype=np.int16).astype(float)
     
-    # CRITICAL: We must match the samples per trace from your training
-    # Looking at your 'Cav001.png', it uses a much higher sample count.
-    # If your training used 100 samples, we must crop or resize.
-    SAMPLES = 100 
-    TRACES = len(raw_data) // SAMPLES
+    # CRITICAL FIX: If your image is slanted, this number is wrong.
+    # Check your .rad file for 'SAMPLES'. It is likely 512, 400, or 100.
+    SAMPLES_PER_TRACE = 100 
     
-    if TRACES > 0:
-        # Reshape using Fortran order 'F' to keep traces vertical
-        matrix = raw_data[:SAMPLES*TRACES].reshape((SAMPLES, TRACES), order='F')
+    num_traces = len(raw_data) // SAMPLES_PER_TRACE
+    
+    if num_traces > 0:
+        # Reshape using 'F' order to keep traces vertical
+        matrix = raw_data[:SAMPLES_PER_TRACE * num_traces].reshape((SAMPLES_PER_TRACE, num_traces), order='F')
         
-        # apply vertical flip to put surface at top
+        # Match MATLAB: Flip vertically and remove background
         matrix = np.flipud(matrix) 
-        
-        # Background Removal: Subtract average of all traces to reveal hyperbolas
-        matrix = matrix - np.mean(matrix, axis=1, keepdims=True)
+        matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
 
-        # 2. Classification
-        # We only take the first 120 traces if that's what your SVM was trained on
-        if TRACES >= 120:
-            sub_matrix = matrix[:, :120]
-            features = sub_matrix.flatten().reshape(1, -1)
+        # Classification
+        # We use the first 120 traces (12,000 features total) as trained in Colab
+        if num_traces >= 120:
+            features = matrix_clean[:, :120].flatten().reshape(1, -1)
             scaled_feat = scaler.transform(features)
-            prediction = model.predict(scaled_feat)[0]
-            
+            pred = model.predict(scaled_feat)[0]
             labels = {1: "Cavity", 2: "Concrete", 3: "Metal Pipe"}
-            st.success(f"Classification: {labels[prediction]}")
+            st.success(f"### Detected: {labels[pred]}")
 
-        # 3. Visualization
+        # Visualization: This will now look like your Cav001.png
         fig, ax = plt.subplots(figsize=(10, 6))
-        # Use seismic (red-white-blue) to highlight the hyperbolic phase
-        v_limit = np.percentile(np.abs(matrix), 98)
-        ax.imshow(matrix, cmap='seismic', aspect='auto', 
-                  vmin=-v_limit, vmax=v_limit, interpolation='bilinear')
-        
-        ax.set_title("Reconstructed Hyperbolic Radargram")
-        ax.set_ylabel("Time Samples (Depth)")
-        ax.set_xlabel("Trace Number")
+        v_limit = np.percentile(np.abs(matrix_clean), 98)
+        ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-v_limit, vmax=v_limit)
+        ax.set_title("Hyperbolic Radargram")
+        ax.set_ylabel("Depth (Samples)")
+        ax.set_xlabel("Traces")
         st.pyplot(fig)
