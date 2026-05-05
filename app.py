@@ -39,10 +39,8 @@ def mat2gray_python(img):
 def matlab_resize_manual(img, new_shape=(100, 120)):
     old_h, old_w = img.shape
     if old_h == 0 or old_w == 0: return np.zeros(new_shape)
-    
     new_h, new_w = new_shape
     scale_y, scale_x = new_h / old_h, new_w / old_w
-    
     rowIndex = np.minimum(np.round(((np.arange(1, new_h + 1)) - 0.5) / scale_y + 0.5).astype(int), old_h) - 1
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
@@ -51,7 +49,7 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 st.title("📡 GPR Intelligent Subsurface Classifier")
 
 if model is None:
-    st.error("Model files not found! Check your repository for svm_model.pkl and scaler.pkl.")
+    st.error("Assets missing! Check for svm_model.pkl and scaler.pkl.")
 else:
     st.sidebar.header("🕹️ Controls")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
@@ -87,32 +85,31 @@ else:
             if energy < soil_limit:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
             else:
-                # 1. Feature Prep
+                # 1. BEMD Pre-processing
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
                 roi_proc = mat2gray_python(imf1)
-                f = roi_proc.flatten(order='F')
-                f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
                 
-                # 2. Geometric Check (Sharpness at Apex)
-                apex_zone = roi_proc[10:40, 45:75] 
-                sharpness = np.max(apex_zone) - np.mean(apex_zone)
+                # 2. Geometric Feature Extraction (Profile Variance)
+                # Bricks have a 'Peak' profile, Medium changes are 'Flat'
+                horizontal_profile = np.max(roi_proc[10:50, :], axis=0)
+                profile_peakiness = np.std(horizontal_profile)
                 
                 # 3. SVM Prediction
+                f = roi_proc.flatten(order='F')
+                f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
                 raw_pred = model.predict(scaler.transform(f))[0]
                 
-                # 4. TRUTH LOGIC GATE
-                # Priority 1: Metal (High Energy)
+                # 4. FINAL TIE-BREAKER LOGIC
                 if energy > 0.028:
-                    final_pred = 3
-                # Priority 2: Brick (Mid Energy + Sharp Apex)
+                    final_pred = 3 # Metal
                 elif 0.013 <= energy <= 0.028:
-                    if sharpness > 0.35:
+                    # If the energy is concentrated (high profile_peakiness), it's a Brick
+                    if profile_peakiness > 0.15:
                         final_pred = 2 # Brick
                     else:
-                        final_pred = 1 # Blurred Medium Change -> Cavity
-                # Priority 3: Cavity (Low Energy)
+                        final_pred = 1 # Cavity / Blur
                 else:
-                    final_pred = 1
+                    final_pred = 1 # Low energy always Cavity
 
                 # 5. UI DISPLAY
                 if final_pred == 1:
@@ -122,5 +119,5 @@ else:
                 else:
                     st.markdown('<div class="result-card" style="background-color: #da3633;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
 
-            st.metric("Reflection Energy Intensity", f"{energy:.4f}")
+            st.metric("Reflection Energy", f"{energy:.4f}")
             st.image(mat2gray_python(roi_ready), caption="BEMD Processing ROI", use_container_width=True)
