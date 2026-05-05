@@ -32,9 +32,9 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. UI SETUP ---
-st.set_page_config(page_title="GPR Autonomous AI", layout="wide")
-st.title("📡 Intelligent GPR Phase-Stable Classifier")
+# --- 2. UI ---
+st.set_page_config(page_title="Autonomous GPR Analyzer", layout="wide")
+st.title("📡 Smart GPR BEMD-SVM Classifier")
 
 if model is None:
     st.error("Missing AI Assets!")
@@ -54,51 +54,47 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE "STABLE APEX" ENGINE ---
-        # Instead of just the center, find the column with the highest variance (the Hyperbola peak)
-        column_variances = np.std(roi_ready, axis=0)
-        apex_idx = np.argmax(column_variances)
+        # --- 3. THE "TAIL RATIO" SMART CHECK ---
+        # Find the apex (strongest column)
+        apex_idx = np.argmax(np.std(roi_ready, axis=0))
         
-        # Pull a 10-pixel slice around the REAL apex, no matter where it is in the box
-        start_idx = max(0, apex_idx - 5)
-        end_idx = min(120, apex_idx + 5)
-        apex_slice = roi_ready[15:45, start_idx:end_idx] 
+        # Center Energy (the peak of the hyperbola)
+        center_energy = np.std(roi_ready[:, max(0, apex_idx-5):min(120, apex_idx+5)])
         
-        # Adaptive Contrast Enhancement on the slice
-        apex_en = exposure.equalize_adapthist(apex_slice, clip_limit=0.03)
-        phase_score = np.mean(apex_en)
+        # Tail Energy (the sides of the hyperbola)
+        tail_energy = (np.std(roi_ready[:, :20]) + np.std(roi_ready[:, 100:])) / 2
+        
+        # Solid objects (Bricks) have stronger 'tails' than hollow ones (Cavities)
+        tail_ratio = tail_energy / (center_energy + 1e-7)
 
-        # --- 4. SMART DECISION LOGIC ---
-        if energy < 0.010:
+        # --- 4. DECISION ENGINE ---
+        if energy < 0.0105:
             res, color = "NO TARGET ⚪", "#484f58"
-        elif energy > 0.026: # High energy is always metal
+        elif energy > 0.026:
             res, color = "METAL PIPE ⚙️", "#da3633"
         else:
-            # Cavities (Air) have a specific phase brightness compared to solids
-            # We use 0.48 as the stable split point for normalized contrast
-            if phase_score > 0.49: 
-                res, color = "CAVITY (VOID) ✅", "#238636"
+            # If the tail ratio is high, the hyperbola is "strong and solid" -> BRICK
+            # If the tail ratio is low, it's "faint and hollow" -> CAVITY
+            # 0.65 is the smart split point for your data
+            if tail_ratio > 0.65:
+                res, color = "CONCRETE / BRICK 🧱", "#d29922"
             else:
-                res, color = "BRICK / CONCRETE 🧱", "#d29922"
+                res, color = "CAVITY (VOID) ✅", "#238636"
 
         # --- 5. DISPLAY ---
         col1, col2 = st.columns([2, 1])
         with col1:
             fig, ax = plt.subplots()
             ax.imshow(full_img, cmap='gray', aspect='auto')
-            # The green box for ROI
             ax.add_patch(patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False))
-            # A red line showing where the AI "found" the apex
-            ax.axvline(h_pos + apex_idx, color='red', linestyle='--', alpha=0.5)
             plt.axis('off')
             st.pyplot(fig)
 
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Reflection Energy", f"{energy:.4f}")
-            st.metric("Apex Stability Score", f"{phase_score:.4f}")
-            st.write(f"Apex located at Trace: {h_pos + apex_idx}")
+            st.metric("Total Signal Strength", f"{energy:.4f}")
+            st.metric("Structure Density (Tail Ratio)", f"{tail_ratio:.4f}")
             
-            # Show the 12,000 features being analyzed
+            # BEMD Image for the 12k features
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-            st.image(mat2gray_python(imf1), caption="12k BEMD IMF-1 Features")
+            st.image(mat2gray_python(imf1), caption="12,000 BEMD Feature Analysis")
