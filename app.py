@@ -4,75 +4,87 @@ import joblib
 import matplotlib.pyplot as plt
 
 # Load trained assets
-model = joblib.load('svm_model.pkl')
-scaler = joblib.load('scaler.pkl')
+@st.cache_resource
+def load_assets():
+    model = joblib.load('svm_model.pkl')
+    scaler = joblib.load('scaler.pkl')
+    return model, scaler
 
-st.title("📡 MALA GPR Analyzer")
+model, scaler = load_assets()
 
-# 1. Improved File Uploader Logic
+st.set_page_config(page_title="GPR Hyperbola Classifier", layout="wide")
+st.title("📡 MALA GPR Analysis System")
+
 uploaded_files = st.file_uploader("Upload .rad and .rd3 files", type=["rad", "rd3"], accept_multiple_files=True)
 
 if len(uploaded_files) == 2:
-    # Initialize variables to avoid NameError
-    rad_file = None
-    rd3_file = None
-
-    # Correctly assign files from the list
-    for f in uploaded_files:
-        if f.name.endswith('.rad'):
-            rad_file = f
-        elif f.name.endswith('.rd3'):
-            rd3_file = f
+    rad_file = next((f for f in uploaded_files if f.name.endswith('.rad')), None)
+    rd3_file = next((f for f in uploaded_files if f.name.endswith('.rd3')), None)
 
     if rad_file and rd3_file:
-        # 2. Parse .rad for SAMPLES count (312 in your file)
+        # 1. Parse .rad for SAMPLES count
         rad_content = rad_file.getvalue().decode("utf-8")
         samples_val = 312 
         for line in rad_content.split('\n'):
             if "SAMPLES:" in line:
                 samples_val = int(line.split(':')[1].strip())
         
-        st.info(f"Header Detected: {samples_val} samples per trace.")
-
-        # 3. Read .rd3 Binary Data
+        # 2. Read Binary Data
         raw_data = np.frombuffer(rd3_file.read(), dtype=np.int16).astype(float)
         num_traces = len(raw_data) // samples_val
         
         if num_traces > 0:
-            # 4. Reshape with 'F' order 
-            # IMPORTANT: We REMOVE np.flipud() to fix the "terbalik" issue
+            # 3. Reshape (order='F' keeps traces vertical)
+            # We do NOT use flipud to keep surface at the top
             matrix = raw_data[:samples_val*num_traces].reshape((samples_val, num_traces), order='F')
             
-            # 5. Background Removal (Subtract Mean) to match Cav001.png
+            # Background Removal (Subtract Row Mean)
             matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
             
-            # 6. Set Contrast (99th percentile for clean black/white look)
-            limit = np.percentile(np.abs(matrix_clean), 99)
+            # 4. ROI & Prediction Logic
+            # Change these to match your MATLAB ROI exactly
+            sample_start, sample_end = 0, 100
+            trace_start, trace_end = 0, 120
 
-            # 7. Visualization
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            # Display original orientation (Surface at the top)
-            img = ax.imshow(matrix_clean, 
-                            cmap='gray', 
-                            aspect='auto', 
-                            vmin=-limit, 
-                            vmax=limit)
-            
-            # Match Labels from Cav001.png
-            ax.set_ylabel("Time (samples)")
-            ax.set_xlabel("Trace")
-            ax.set_title("Radargram Reconstructed")
-            st.pyplot(fig)
-
-            # 8. Classification Logic
-            if num_traces >= 120:
-                feat_matrix = matrix_clean[:100, :120] 
-                features = feat_matrix.flatten().reshape(1, -1)
+            if num_traces >= trace_end:
+                # CROP TO ROI
+                roi = matrix_clean[sample_start:sample_end, trace_start:trace_end]
+                
+                # FLATTEN (order='F' matches MATLAB column-major)
+                features = roi.flatten(order='F').reshape(1, -1)
+                
+                # PREDICT
                 scaled_feat = scaler.transform(features)
                 pred = model.predict(scaled_feat)[0]
                 
-                labels = {1: "Cavity", 2: "Brick", 3: "Metal Pipe"}
-                st.success(f"### Classification Result: {labels.get(pred, 'Unrecognizable')}")
+                labels = {1: "Cavity", 2: "Metal Pipe", 3: "Brick"}
+                result = labels.get(pred, "Unknown")
+                
+                # Display Results
+                st.subheader("Classification Result")
+                if result == "Cavity":
+                    st.success(f"### Detected: {result} ✅")
+                else:
+                    st.warning(f"### Detected: {result}")
+
+            # 5. Visualization
+            st.subheader("Radargram Preview")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                # Main Radargram
+                limit = np.percentile(np.abs(matrix_clean), 99)
+                fig, ax = plt.subplots()
+                ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
+                ax.set_title("Full Radargram (Background Removed)")
+                st.pyplot(fig)
+
+            with col2:
+                # ROI Preview (What the SVM sees)
+                if num_traces >= trace_end:
+                    fig2, ax2 = plt.subplots()
+                    ax2.imshow(roi, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
+                    ax2.set_title("ROI Window (100x120)")
+                    st.pyplot(fig2)
     else:
-        st.error("Please ensure you uploaded one .rad file and one .rd3 file.")
+        st.error("Please upload both a .rad and a .rd3 file.")
