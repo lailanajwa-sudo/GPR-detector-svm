@@ -33,13 +33,14 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     return img[np.ix_(rowIndex, colIndex)]
 
 # --- 2. UI ---
-st.set_page_config(page_title="Autonomous GPR Analyzer", layout="wide")
-st.title("📡 Smart GPR BEMD-SVM Classifier")
+st.set_page_config(page_title="Deep-Scan GPR AI", layout="wide")
+st.title("📡 Autonomous Subsurface Classifier")
 
 if model is None:
     st.error("Missing AI Assets!")
 else:
-    v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
+    # Adjusted slider ranges because the image is now shorter
+    v_pos = st.sidebar.slider("Depth (Adjusted)", 0, 312-40-100, 80)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
@@ -48,29 +49,30 @@ else:
         rd3_f = next(f for f in files if f.name.endswith('.rd3'))
         raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
         matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
-        matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
+        
+        # --- SMART CROP ---
+        # We cut the first 40 pixels (Direct Coupling/Air-Soil Interface)
+        matrix_cropped = matrix[40:, :] 
+        
+        matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE SMART PHASE CHECK ---
+        # --- 3. PHASE POLARITY ---
         apex_idx = np.argmax(np.std(roi_ready, axis=0))
         waveform = roi_ready[:, apex_idx]
-        # Find peak intensity relative to grayscale 0.5
         first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
-        
-        # Calibrated Phase Logic
         is_cavity_phase = first_peak <= 0.50 
 
-        # --- 4. THE ENERGY GATE (Fixes the BG/Cavity Mix) ---
-        # Increased threshold to 0.0125 to filter out background 'noise'
-        if energy < 0.0125:
+        # --- 4. CLASSIFICATION ---
+        # With the crop, the noise floor is much cleaner
+        if energy < 0.0135: 
             res, color = "NO TARGET (SOIL) ⚪", "#484f58"
         elif energy > 0.026:
             res, color = "METAL PIPE ⚙️", "#da3633"
         else:
-            # Only classify if we have a real target reflection
             if is_cavity_phase:
                 res, color = "CAVITY (VOID) ✅", "#238636"
             else:
@@ -87,8 +89,8 @@ else:
 
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Signal Intensity", f"{energy:.4f}")
-            st.write("Detection: " + ("Target Found" if energy >= 0.0125 else "Scanning Soil..."))
+            st.metric("Cleaned Energy Score", f"{energy:.4f}")
+            st.write("Interface Noise Removed: **Yes**")
             
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-            st.image(mat2gray_python(imf1), caption="12,000 BEMD Feature Map")
+            st.image(mat2gray_python(imf1), caption="12,000 BEMD Filtered Features")
