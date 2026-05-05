@@ -4,7 +4,7 @@ import joblib
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 
-# Load trained assets
+# Load Assets
 @st.cache_resource
 def load_assets():
     model = joblib.load('svm_model.pkl')
@@ -13,14 +13,13 @@ def load_assets():
 
 model, scaler = load_assets()
 
-st.set_page_config(page_title="GPR Assignment Final", layout="wide")
-st.title("📡 MALA GPR Classification System")
+st.set_page_config(page_title="GPR Classifier", layout="wide")
+st.title("📡 MALA GPR Analysis System")
 
-# ROI Positioners
-st.sidebar.header("Target Selection")
-# Adjust these sliders until the RED BOX is exactly on the hyperbola
-v_start = st.sidebar.slider("Vertical (Depth)", 0, 212, 125) 
-h_start = st.sidebar.slider("Horizontal (Trace)", 0, 300, 215)
+# ROI Positioners in Sidebar
+st.sidebar.header("ROI Alignment")
+v_start = st.sidebar.slider("Vertical Pos", 0, 212, 120)
+h_start = st.sidebar.slider("Horizontal Pos", 0, 350, 200)
 
 uploaded_files = st.file_uploader("Upload .rad and .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -43,25 +42,24 @@ if len(uploaded_files) == 2:
         if num_traces > 0:
             # 3. Process Matrix
             matrix = raw_data[:samples_val*num_traces].reshape((samples_val, num_traces), order='F')
-            # Background removal (MATLAB style)
             matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
             
-            # 4. Extract and Standardize ROI
-            roi = matrix_clean[v_start:v_start+100, h_start:h_start+120]
+            # 4. ROI Extraction (100x120)
+            roi = matrix_clean[v_start : v_start+100, h_start : h_start+120]
             
-            # --- THE FINAL FIX: Z-SCORE STANDARDIZATION ---
-            # This replicates MATLAB's zscore(data) inside the ROI
+            # --- STANDARDIZATION FIX ---
+            # This makes the ROI "look" like the trained data statistically
             if np.std(roi) > 0:
-                roi_final = (roi - np.mean(roi)) / np.std(roi)
+                roi_std = (roi - np.mean(roi)) / np.std(roi)
             else:
-                roi_final = roi
+                roi_std = roi
 
-            # 5. UI Layout
+            # 5. UI Visualization
             col1, col2 = st.columns([2, 1])
             limit = np.percentile(np.abs(matrix_clean), 98)
 
             with col1:
-                st.subheader("Radargram (Target Selection)")
+                st.subheader("Radargram Selection")
                 fig, ax = plt.subplots()
                 ax.imshow(matrix_clean, cmap='gray', aspect='auto', vmin=-limit, vmax=limit)
                 rect = patches.Rectangle((h_start, v_start), 120, 100, linewidth=2, edgecolor='r', facecolor='none')
@@ -69,28 +67,29 @@ if len(uploaded_files) == 2:
                 st.pyplot(fig)
 
             with col2:
-                st.subheader("Classification")
+                st.subheader("Detection Result")
                 fig2, ax2 = plt.subplots()
-                ax2.imshow(roi_final, cmap='gray', aspect='auto')
-                ax2.set_title("Standardized ROI")
+                ax2.imshow(roi_std, cmap='gray', aspect='auto')
+                ax2.set_title("Input to Model")
                 st.pyplot(fig2)
 
-                # 6. Predict with Fortran Flattening
-                features = roi_final.flatten(order='F').reshape(1, -1)
-                
-                # Apply the scaler from training
+                # Predict using Fortran flattening
+                features = roi_std.flatten(order='F').reshape(1, -1)
                 scaled_feat = scaler.transform(features)
                 pred = model.predict(scaled_feat)[0]
                 
-                # --- DOUBLE CHECK THIS MAPPING ---
-                # Based on your prompt: 1=Cavity, 2=Metal Pipe, 3=Brick
-                labels = {1: "Cavity", 2: "Metal Pipe", 3: "Brick"}
+                # UPDATED LABELS: 1=Cavity, 2=Brick, 3=Metal Pipe
+                labels = {1: "Cavity", 2: "Brick", 3: "Metal Pipe"}
                 result = labels.get(pred, "Unknown")
                 
                 if result == "Cavity":
-                    st.success(f"### Result: {result} ✅")
-                elif result == "Metal Pipe":
-                    st.info(f"### Result: {result} ⚙️")
+                    st.success(f"### Detected: {result} ✅")
+                elif result == "Brick":
+                    st.warning(f"### Detected: {result} 🧱")
                 else:
-                    st.warning(f"### Result: {result} 🧱")
-                    st.write("Tip: If it still says Brick, check if your Excel labels match 1=Cavity.")
+                    st.info(f"### Detected: {result} ⚙️")
+
+### Final Check for your Assignment:
+# - Ensure the Red Box is centered on the hyperbola.
+# - If the app detects "Brick" but the box is on a curve, try moving the box 
+#   slightly up or down to find the 'peak' of the curve.
