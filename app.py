@@ -39,7 +39,10 @@ def mat2gray_python(img):
 def matlab_resize_manual(img, new_shape=(100, 120)):
     old_h, old_w = img.shape
     if old_h == 0 or old_w == 0: return np.zeros(new_shape)
+    
+    new_h, new_w = new_shape
     scale_y, scale_x = new_h / old_h, new_w / old_w
+    
     rowIndex = np.minimum(np.round(((np.arange(1, new_h + 1)) - 0.5) / scale_y + 0.5).astype(int), old_h) - 1
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
@@ -48,14 +51,14 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 st.title("📡 GPR Intelligent Subsurface Classifier")
 
 if model is None:
-    st.error("Assets missing!")
+    st.error("Model files not found! Check your repository for svm_model.pkl and scaler.pkl.")
 else:
     st.sidebar.header("🕹️ Controls")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # Recommended for demo: 0.010
-    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.010, step=0.001)
+    # Recommended default: 0.009
+    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.009, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -84,35 +87,32 @@ else:
             if energy < soil_limit:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
             else:
-                # 1. Feature Extraction
+                # 1. Feature Prep
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                f_processed = mat2gray_python(imf1)
-                f = f_processed.flatten(order='F')
+                roi_proc = mat2gray_python(imf1)
+                f = roi_proc.flatten(order='F')
                 f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
                 
-                # 2. Apex Sharpness Analysis (Tie-Breaker)
-                # We check the top-center 20x20 pixels
-                apex_zone = f_processed[10:30, 50:70]
-                apex_sharpness = np.max(apex_zone) - np.mean(apex_zone)
+                # 2. Geometric Check (Sharpness at Apex)
+                apex_zone = roi_proc[10:40, 45:75] 
+                sharpness = np.max(apex_zone) - np.mean(apex_zone)
                 
                 # 3. SVM Prediction
                 raw_pred = model.predict(scaler.transform(f))[0]
                 
-                # 4. FINAL CLASSIFICATION LOGIC
-                final_pred = raw_pred
-                
-                # Force Metal if energy is very high
-                if energy > 0.032:
-                    final_pred = 3 
-                # Refine Brick vs Cavity
-                elif 0.013 <= energy <= 0.032:
-                    # If it's a sharp peak, call it Brick. If it's dull, call it Cavity.
-                    if apex_sharpness > 0.4:
+                # 4. TRUTH LOGIC GATE
+                # Priority 1: Metal (High Energy)
+                if energy > 0.028:
+                    final_pred = 3
+                # Priority 2: Brick (Mid Energy + Sharp Apex)
+                elif 0.013 <= energy <= 0.028:
+                    if sharpness > 0.35:
                         final_pred = 2 # Brick
                     else:
-                        final_pred = 1 # Cavity
+                        final_pred = 1 # Blurred Medium Change -> Cavity
+                # Priority 3: Cavity (Low Energy)
                 else:
-                    final_pred = 1 # Weak signal is always Cavity
+                    final_pred = 1
 
                 # 5. UI DISPLAY
                 if final_pred == 1:
