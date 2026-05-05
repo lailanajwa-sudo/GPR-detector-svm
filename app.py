@@ -46,8 +46,12 @@ model, scaler = load_assets()
 
 # --- 3. PROCESSING ENGINE ---
 def mat2gray_python(img):
+    """Safely converts image to grayscale [0,1] and prevents ZeroDivisionError"""
     mn, mx = np.min(img), np.max(img)
-    return (img - mn) / (mx - mn) if mx - mn > 0 else np.zeros_like(img)
+    denominator = mx - mn
+    if denominator <= 0:
+        return np.zeros_like(img, dtype=np.float64)
+    return (img - mn) / denominator
 
 def matlab_resize_manual(img, new_shape=(100, 120)):
     old_h, old_w = img.shape
@@ -58,11 +62,13 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     return img[np.ix_(rowIndex, colIndex)]
 
 def extract_bemd_features(roi):
+    # IMF1 Simulation using 2D Detrending
     imf1 = detrend(detrend(roi, axis=0), axis=1)
     imf1_gray = mat2gray_python(imf1)
     feat = imf1_gray.flatten(order='F')
     
     # Feature count alignment (Matches your .pkl requirements)
+    # If your model expects 11999, change this to 11999
     target_len = 12000 
     if len(feat) < target_len:
         feat = np.pad(feat, (0, target_len - len(feat)), 'constant')
@@ -128,7 +134,7 @@ else:
             
             # --- HYBRID CLASSIFICATION ENGINE ---
             if energy < soil_limit:
-                # STATE 0: BACKGROUND
+                # STATE: BACKGROUND
                 st.markdown('<div class="result-card" style="background-color: #7f8c8d;">NO TARGET ⚪</div>', unsafe_allow_html=True)
                 st.write("Scanning background soil. No significant anomaly detected.")
             else:
@@ -137,23 +143,21 @@ else:
                 pred = model.predict(s)[0]
                 
                 # REFINEMENT LOGIC (Physics-Based Overrides)
-                if 0.008 <= energy < 0.016:
-                    pred = 1 # Force Cavity
+                # Adjusted thresholds for better Concrete detection
+                if soil_limit <= energy < 0.016:
+                    pred = 1 # Cavity
                 elif 0.016 <= energy < 0.030:
-                    pred = 2 # Force Concrete
+                    pred = 2 # Concrete/Brick
                 elif energy >= 0.030:
-                    pred = 3 # Force Metal
+                    pred = 3 # Metal Pipe
 
                 # VISUAL DISPLAY
                 if pred == 1:
                     st.markdown('<div class="result-card" style="background-color: #2ecc71;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
-                    st.write("Target identified as an air-filled cavity or void.")
                 elif pred == 2:
                     st.markdown('<div class="result-card" style="background-color: #f1c40f; color: #2c3e50;">CONCRETE / BRICK 🧱</div>', unsafe_allow_html=True)
-                    st.write("Target identified as a solid concrete or brick structure.")
                 else:
                     st.markdown('<div class="result-card" style="background-color: #e74c3c;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
-                    st.write("Target identified as a high-contrast metallic utility.")
 
             st.markdown("---")
             st.metric("Reflection Energy Intensity", f"{energy:.4f}")
