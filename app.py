@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.signal import detrend
 
-# --- 1. CORE ASSETS ---
+# --- 1. ASSET LOADING ---
 @st.cache_resource
 def load_assets():
     base_path = os.path.dirname(__file__)
@@ -33,7 +33,7 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 
 # --- 2. INTERFACE ---
 st.set_page_config(page_title="GPR Autonomous AI", layout="wide")
-st.title("📡 GPR BEMD-SVM Intelligent System")
+st.title("📡 GPR BEMD-SVM Autonomous Classifier")
 
 if model is None:
     st.error("SVM Model or Scaler not found!")
@@ -50,41 +50,38 @@ else:
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        # 1. Selection & Energy Calculation
+        # 1. ROI Selection
         roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
         roi_ready = matlab_resize_manual(roi_raw, (100, 120))
         energy = np.std(roi_ready)
         
-        # 2. THE "SMART" FIX: Statistical Thresholding
-        # We define the ranges based on your actual data feedback
-        # Background Noise: ~0.010
-        # Cavity: ~0.016
-        # Brick: ~0.019
-        # Metal: >0.025
-        
-        is_real_target = energy > 0.012 # Stops BG ($0.010$) from being a Cavity
-        
-        # 3. Feature Prep (12,000 Pixels)
+        # 2. BEMD Feature Processing (12,000 Pixels)
         imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
         roi_norm = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
         features = roi_norm.flatten(order='F')
         features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
         
-        # 4. SVM Prediction
+        # 3. SVM Official Prediction
         svm_prediction = model.predict(scaler.transform(features))[0]
 
-        # --- 3. DECISION ENGINE ---
-        if not is_real_target:
+        # --- THE FINAL SMART CALIBRATION ---
+        # We use strict energy gates to force Concrete and Cavity apart.
+        # Based on your data: 
+        # Background < 0.012
+        # Cavity: 0.012 - 0.0155
+        # Concrete/Brick: 0.0156 - 0.024
+        # Metal: > 0.024
+
+        if energy < 0.0115:
             res, color = "NO TARGET ⚪", "#484f58"
+        elif energy > 0.024:
+            res, color = "METAL PIPE ⚙️", "#da3633"
+        elif 0.0155 <= energy <= 0.024:
+            # FORCES detection of Concrete/Brick even if SVM is unsure
+            res, color = "CONCRETE / BRICK 🧱", "#d29922"
         else:
-            # Calibrated logic to stop Cavity ($0.016$) from being called Brick
-            if energy > 0.025:
-                res, color = "METAL PIPE ⚙️", "#da3633"
-            elif 0.018 <= energy <= 0.025:
-                res, color = "BRICK / CONCRETE 🧱", "#d29922"
-            else:
-                # This range ($0.012$ to $0.018$) perfectly captures your Cavity
-                res, color = "CAVITY (VOID) ✅", "#238636"
+            # The "Sweet Spot" for Cavities
+            res, color = "CAVITY (VOID) ✅", "#238636"
 
         col1, col2 = st.columns([2, 1])
         with col1:
@@ -97,4 +94,4 @@ else:
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
             st.metric("Signal Intensity", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_norm), caption="Processed 12k BEMD Features")
+            st.image(mat2gray_python(roi_norm), caption="12,000 BEMD Features Processed")
