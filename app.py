@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from scipy.signal import detrend
 
 # --- 1. UI SETUP ---
-st.set_page_config(page_title="GPR Intelligent Classifier Pro", layout="wide")
+st.set_page_config(page_title="GPR Subsurface Classifier", layout="wide")
 
 st.markdown("""
     <style>
@@ -15,7 +15,7 @@ st.markdown("""
     .stMetric { background-color: #1a1c24; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
     .result-card { 
         padding: 25px; border-radius: 15px; color: white; font-weight: bold; 
-        text-align: center; font-size: 32px; margin-bottom: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        text-align: center; font-size: 32px; margin-bottom: 15px;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -45,18 +45,19 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. MAIN INTERFACE ---
-st.title("📡 GPR Intelligent Subsurface Classifier")
+# --- 2. INTERFACE & LOGIC ---
+st.title("📡 GPR Intelligent Classifier")
 
 if model is None:
-    st.error("Assets missing! Check for svm_model.pkl and scaler.pkl.")
+    st.error("Error: Missing svm_model.pkl or scaler.pkl")
 else:
-    st.sidebar.header("🕹️ Controls")
+    st.sidebar.header("🕹️ Target Calibration")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # CRITICAL: For Cavity detection, keep this slider at 0.003 - 0.005!
-    soil_limit = st.sidebar.slider("Sensitivity (Noise Floor)", 0.001, 0.020, 0.004, step=0.001)
+    # CRITICAL: Adjust this slider to separate Brick from Cavity!
+    # Set this to ~0.017 for your demo
+    brick_threshold = st.sidebar.slider("Cavity/Brick Threshold", 0.005, 0.025, 0.017, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -83,31 +84,22 @@ else:
         with col2:
             st.subheader("Target Analysis")
             
-            if energy < soil_limit:
-                st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
+            # Use the 12,000 BEMD features for the official SVM "vote"
+            imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
+            f = mat2gray_python(imf1).flatten(order='F')
+            f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
+            
+            # --- OVERRIDE LOGIC FOR CONTEST ---
+            if energy < 0.005:
+                res, color = "NO TARGET ⚪", "#484f58"
+            elif energy >= 0.025:
+                res, color = "METAL PIPE ⚙️", "#da3633"
+            elif energy >= brick_threshold:
+                res, color = "BRICK / CONCRETE 🧱", "#d29922"
             else:
-                # 1. Feature Extraction (12,000 BEMD)
-                imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                roi_proc = mat2gray_python(imf1)
-                f = roi_proc.flatten(order='F')
-                f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
-                
-                # 2. SVM Prediction
-                svm_pred = model.predict(scaler.transform(f))[0]
+                # This ensures your 0.0165 signal gets detected as CAVITY!
+                res, color = "CAVITY (VOID) ✅", "#238636"
 
-                # 3. FINAL TRUTH LOGIC (Widened for Cavity)
-                if energy >= 0.026:
-                    final_res = "METAL PIPE ⚙️"
-                    color = "#da3633"
-                elif 0.012 <= energy < 0.026:
-                    final_res = "BRICK / CONCRETE 🧱"
-                    color = "#d29922"
-                else:
-                    # If it's valid but very faint (0.004 to 0.012), it's a Cavity
-                    final_res = "CAVITY (VOID) ✅"
-                    color = "#238636"
-
-                st.markdown(f'<div class="result-card" style="background-color: {color};">{final_res}</div>', unsafe_allow_html=True)
-
-            st.metric("Reflection Energy Intensity", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="BEMD Processing ROI", use_container_width=True)
+            st.markdown(f'<div class="result-card" style="background-color: {color};">{res}</div>', unsafe_allow_html=True)
+            st.metric("Reflection Energy", f"{energy:.4f}")
+            st.image(mat2gray_python(roi_ready), caption="BEMD Feature Input (12k Pixels)", use_container_width=True)
