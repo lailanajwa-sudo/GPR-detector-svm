@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from scipy.signal import detrend
 
 # --- 1. UI SETUP ---
-st.set_page_config(page_title="GPR BEMD-SVM Subsurface Classifier", layout="wide")
+st.set_page_config(page_title="GPR Intelligent Classifier Pro", layout="wide")
 
 st.markdown("""
     <style>
@@ -45,8 +45,8 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. LOGIC ---
-st.title("📡 GPR Intelligent Subsurface Classifier")
+# --- 2. MAIN APP ---
+st.title("📡 GPR Subsurface Classifier")
 
 if model is None:
     st.error("Assets missing!")
@@ -55,11 +55,7 @@ else:
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # INCREASE THIS to 0.012 to stop background from being "Cavity"
-    noise_floor = st.sidebar.slider("Background Noise Floor", 0.001, 0.025, 0.011, step=0.001)
-    
-    # THRESHOLD to separate Cavity from Brick
-    # Set to 0.017 based on your screenshots
+    noise_floor = st.sidebar.slider("Noise Floor", 0.001, 0.025, 0.010, step=0.001)
     brick_gate = st.sidebar.slider("Brick Threshold", 0.010, 0.030, 0.017, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
@@ -74,6 +70,12 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
 
+        # --- GEOMETRY GUARD ---
+        # Calculate how "flat" the signal is. 
+        # Medium changes are horizontal bars (low variance across the horizontal axis)
+        horizontal_std = np.mean(np.std(roi_ready, axis=1)) 
+        is_flat_bar = horizontal_std < 0.035 # Adjust this if bars still show up
+
         col1, col2 = st.columns([2, 1])
         with col1:
             fig, ax = plt.subplots(figsize=(10, 6))
@@ -86,31 +88,26 @@ else:
         with col2:
             st.subheader("Target Analysis")
             
-            # Feature extraction for SVM
+            # Use the 12k features for the SVM
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
             f = mat2gray_python(imf1).flatten(order='F')
             f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
             
-            # Run the SVM vote
-            svm_pred = model.predict(scaler.transform(f))[0]
-
-            # --- THE FIX ---
-            # 1. If energy is super low, it's Background (No Target)
-            if energy < noise_floor:
+            # LOGIC OVERRIDE
+            if energy < noise_floor or is_flat_bar:
                 res, color = "NO TARGET ⚪", "#484f58"
-            
-            # 2. If energy is high, it's Metal
+                status = "Ignoring Surface/Layer" if is_flat_bar and energy > noise_floor else "Below Noise Floor"
             elif energy >= 0.026:
                 res, color = "METAL PIPE ⚙️", "#da3633"
-            
-            # 3. If energy is between noise and metal...
+                status = "Target Detected"
+            elif energy >= brick_gate:
+                res, color = "BRICK / CONCRETE 🧱", "#d29922"
+                status = "Target Detected"
             else:
-                # Use the 'brick_gate' to decide between Cavity and Brick
-                if energy >= brick_gate:
-                    res, color = "BRICK / CONCRETE 🧱", "#d29922"
-                else:
-                    res, color = "CAVITY (VOID) ✅", "#238636"
+                res, color = "CAVITY (VOID) ✅", "#238636"
+                status = "Target Detected"
 
             st.markdown(f'<div class="result-card" style="background-color: {color};">{res}</div>', unsafe_allow_html=True)
+            st.write(f"System Status: {status}")
             st.metric("Reflection Energy", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="BEMD 12k Feature Input", use_container_width=True)
+            st.image(mat2gray_python(roi_ready), caption="BEMD Processing ROI", use_container_width=True)
