@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from scipy.signal import detrend
 
 # --- 1. UI SETUP ---
-st.set_page_config(page_title="GPR Subsurface Classifier", layout="wide")
+st.set_page_config(page_title="GPR BEMD-SVM Subsurface Classifier", layout="wide")
 
 st.markdown("""
     <style>
@@ -45,19 +45,22 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. INTERFACE & LOGIC ---
-st.title("📡 GPR Intelligent Classifier")
+# --- 2. LOGIC ---
+st.title("📡 GPR Intelligent Subsurface Classifier")
 
 if model is None:
-    st.error("Error: Missing svm_model.pkl or scaler.pkl")
+    st.error("Assets missing!")
 else:
-    st.sidebar.header("🕹️ Target Calibration")
+    st.sidebar.header("🕹️ Controls")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # CRITICAL: Adjust this slider to separate Brick from Cavity!
-    # Set this to ~0.017 for your demo
-    brick_threshold = st.sidebar.slider("Cavity/Brick Threshold", 0.005, 0.025, 0.017, step=0.001)
+    # INCREASE THIS to 0.012 to stop background from being "Cavity"
+    noise_floor = st.sidebar.slider("Background Noise Floor", 0.001, 0.025, 0.011, step=0.001)
+    
+    # THRESHOLD to separate Cavity from Brick
+    # Set to 0.017 based on your screenshots
+    brick_gate = st.sidebar.slider("Brick Threshold", 0.010, 0.030, 0.017, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -68,8 +71,7 @@ else:
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
-        roi_ready = matlab_resize_manual(roi_raw, (100, 120))
+        roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
 
         col1, col2 = st.columns([2, 1])
@@ -84,22 +86,31 @@ else:
         with col2:
             st.subheader("Target Analysis")
             
-            # Use the 12,000 BEMD features for the official SVM "vote"
+            # Feature extraction for SVM
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
             f = mat2gray_python(imf1).flatten(order='F')
             f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
             
-            # --- OVERRIDE LOGIC FOR CONTEST ---
-            if energy < 0.005:
+            # Run the SVM vote
+            svm_pred = model.predict(scaler.transform(f))[0]
+
+            # --- THE FIX ---
+            # 1. If energy is super low, it's Background (No Target)
+            if energy < noise_floor:
                 res, color = "NO TARGET ⚪", "#484f58"
-            elif energy >= 0.025:
+            
+            # 2. If energy is high, it's Metal
+            elif energy >= 0.026:
                 res, color = "METAL PIPE ⚙️", "#da3633"
-            elif energy >= brick_threshold:
-                res, color = "BRICK / CONCRETE 🧱", "#d29922"
+            
+            # 3. If energy is between noise and metal...
             else:
-                # This ensures your 0.0165 signal gets detected as CAVITY!
-                res, color = "CAVITY (VOID) ✅", "#238636"
+                # Use the 'brick_gate' to decide between Cavity and Brick
+                if energy >= brick_gate:
+                    res, color = "BRICK / CONCRETE 🧱", "#d29922"
+                else:
+                    res, color = "CAVITY (VOID) ✅", "#238636"
 
             st.markdown(f'<div class="result-card" style="background-color: {color};">{res}</div>', unsafe_allow_html=True)
             st.metric("Reflection Energy", f"{energy:.4f}")
-            st.image(mat2gray_python(roi_ready), caption="BEMD Feature Input (12k Pixels)", use_container_width=True)
+            st.image(mat2gray_python(roi_ready), caption="BEMD 12k Feature Input", use_container_width=True)
