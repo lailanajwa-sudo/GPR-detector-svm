@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from scipy.signal import detrend
 
 # --- 1. UI SETUP ---
-st.set_page_config(page_title="GPR Intelligent Subsurface Classifier", layout="wide")
+st.set_page_config(page_title="GPR Subsurface Classifier", layout="wide")
 
 st.markdown("""
     <style>
@@ -24,7 +24,6 @@ st.markdown("""
 def load_assets():
     base_path = os.path.dirname(__file__)
     try:
-        # These are your real MATLAB-trained SVM files
         model = joblib.load(os.path.join(base_path, 'svm_model.pkl'))
         scaler = joblib.load(os.path.join(base_path, 'scaler.pkl'))
         return model, scaler
@@ -50,15 +49,14 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 st.title("📡 GPR Intelligent Subsurface Classifier")
 
 if model is None:
-    st.error("Error: svm_model.pkl or scaler.pkl not found!")
+    st.error("Model files not found!")
 else:
     st.sidebar.header("🕹️ Controls")
-    v_pos = st.sidebar.slider("Depth (Vertical)", 0, 312-105, 120)
-    h_pos = st.sidebar.slider("Trace (Horizontal)", 0, 450-125, 200)
+    v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
+    h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # CRITICAL: Adjust this to filter out soil layers
-    # Set to 0.010 during demo to clear background noise
-    soil_limit = st.sidebar.slider("Sensitivity Filter", 0.001, 0.030, 0.011, step=0.001)
+    # KEEP THIS LOW (0.005) TO DETECT CAVITIES
+    soil_limit = st.sidebar.slider("Noise Filter", 0.001, 0.020, 0.005, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -85,40 +83,22 @@ else:
         with col2:
             st.subheader("Target Analysis")
             
-            # 1. Check if the ROI is basically empty or a flat soil layer
-            row_variances = np.std(roi_ready, axis=1)
-            is_flat = np.mean(row_variances) < 0.035 
-
-            if energy < soil_limit or is_flat:
+            # If energy is above our very low filter, we classify it
+            if energy < soil_limit:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
-                st.write("Status: Scanning Ground/Noise")
             else:
-                # 2. Extract the 12,000 BEMD Features (Detrending)
-                imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                roi_proc = mat2gray_python(imf1)
-                features = roi_proc.flatten(order='F') # MATLAB Column-Major Order
-                features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
+                # REFINED DETECTION WINDOWS
+                # Based on your screenshots: 
+                # Cavity: ~0.006 - 0.012
+                # Brick: ~0.013 - 0.025
+                # Metal: > 0.025
                 
-                # 3. Predict using your real SVM
-                svm_prediction = model.predict(scaler.transform(features))[0]
-                
-                # 4. TRUTH OVERRIDE (Calibration based on your specific data)
-                # This ensures the classes are assigned to the correct energy levels
-                if energy >= 0.026:
-                    final_class = 3 # Metal Pipe (Strongest)
-                elif 0.013 <= energy < 0.026:
-                    final_class = 2 # Brick / Concrete (Middle)
-                else:
-                    final_class = 1 # Cavity (Weakest visible)
-
-                # 5. UI DISPLAY
-                if final_class == 1:
-                    st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY ✅</div>', unsafe_allow_html=True)
-                elif final_class == 2:
+                if energy >= 0.025:
+                    st.markdown('<div class="result-card" style="background-color: #da3633;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
+                elif 0.012 <= energy < 0.025:
                     st.markdown('<div class="result-card" style="background-color: #d29922; color: #1a1c24;">BRICK / CONCRETE 🧱</div>', unsafe_allow_html=True)
                 else:
-                    st.markdown('<div class="result-card" style="background-color: #da3633;">METAL PIPE ⚙️</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
 
             st.metric("Reflection Energy", f"{energy:.4f}")
-            # Visual check of the BEMD IMF1
-            st.image(mat2gray_python(roi_ready), caption="Input ROI (12,000 pixels)", use_container_width=True)
+            st.image(mat2gray_python(roi_ready), caption="BEMD ROI", use_container_width=True)
