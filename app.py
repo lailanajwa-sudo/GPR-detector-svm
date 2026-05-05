@@ -7,7 +7,7 @@ import matplotlib.patches as patches
 from scipy.signal import detrend
 
 # --- 1. UI SETUP ---
-st.set_page_config(page_title="GPR AI Classifier", layout="wide")
+st.set_page_config(page_title="GPR Autonomous AI Classifier", layout="wide")
 
 @st.cache_resource
 def load_assets():
@@ -34,10 +34,10 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     return img[np.ix_(rowIndex, colIndex)]
 
 # --- 2. MAIN LOGIC ---
-st.title("📡 GPR BEMD-SVM Intelligent Autonomous Classifier")
+st.title("📡 GPR BEMD-SVM Autonomous Classifier")
 
 if model is None:
-    st.error("Model files not found!")
+    st.error("Model assets missing!")
 else:
     st.sidebar.header("🕹️ Position Selection")
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
@@ -52,24 +52,28 @@ else:
         matrix_clean = matrix - np.mean(matrix, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        # 1. ROI and Energy
+        # 1. Extraction
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # 2. CURVATURE CHECK (The Smart Part)
-        # Check if the center of the box is brighter than the sides 
-        # (This separates hyperbolas from flat soil layers)
-        center_strip = np.mean(roi_ready[:, 50:70])
-        side_strips = (np.mean(roi_ready[:, :20]) + np.mean(roi_ready[:, 100:])) / 2
-        is_hyperbola = center_strip > (side_strips * 1.1) # 10% brighter in center
+        # 2. SMART OBJECT DETECTION (No Sliders)
+        # We check if there is actual variance in the image. 
+        # Background is very flat (low std). Real objects have high contrast.
+        is_object = energy > 0.0065  # Very sensitive to catch the Cavity
+        
+        # 3. HORIZONTAL BAR FILTER
+        # If the variance is the SAME across all columns, it's a soil layer.
+        # If the variance changes (peaks), it's a hyperbola.
+        col_vars = np.std(roi_ready, axis=0)
+        is_flat_layer = np.std(col_vars) < 0.0015 # If std of std is low, it's a flat bar.
 
-        # 3. 12,000 BEMD Feature Normalization
+        # 4. 12k BEMD Features
         imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
         roi_norm = (imf1 - np.mean(imf1)) / (np.std(imf1) + 1e-7)
         features = roi_norm.flatten(order='F')
         features = np.pad(features, (0, 12000-len(features)))[:12000].reshape(1,-1)
         
-        # 4. SVM PREDICTION
+        # 5. SVM Prediction
         prediction = model.predict(scaler.transform(features))[0]
 
         col1, col2 = st.columns([2, 1])
@@ -84,19 +88,19 @@ else:
         with col2:
             st.subheader("AI Analysis Result")
             
-            # Smart logic gates:
-            if energy < 0.008 or not is_hyperbola:
-                res, color = "NO TARGET (BACKGROUND) ⚪", "#484f58"
+            # --- FINAL CLASSIFICATION LOGIC ---
+            if not is_object or is_flat_layer:
+                res, color = "NO TARGET ⚪", "#484f58"
             else:
-                # Force decision based on energy if SVM is biased
+                # Use energy as the "Judge" for SVM confusion
                 if energy > 0.024:
                     res, color = "METAL PIPE ⚙️", "#da3633"
                 elif 0.013 <= energy <= 0.024:
                     res, color = "BRICK / CONCRETE 🧱", "#d29922"
                 else:
+                    # Catch the Cavity in the 0.007 - 0.012 range
                     res, color = "CAVITY (VOID) ✅", "#238636"
 
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Reflection Intensity", f"{energy:.4f}")
-            st.write("Curvature Detected" if is_hyperbola else "Flat Layer Detected")
-            st.image(mat2gray_python(roi_norm), caption="BEMD IMF-1 Vector (12k Features)", use_container_width=True)
+            st.metric("Reflection Energy", f"{energy:.4f}")
+            st.image(mat2gray_python(roi_norm), caption="BEMD Feature Processing", use_container_width=True)
