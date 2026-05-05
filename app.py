@@ -54,16 +54,14 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE SMART PHASE-POLARITY CHECK ---
-        # 1. Find the Apex
+        # --- 3. THE CALIBRATED PHASE CHECK ---
         apex_idx = np.argmax(np.std(roi_ready, axis=0))
-        # 2. Extract the vertical waveform at the apex
         waveform = roi_ready[:, apex_idx]
-        # 3. Find the first major peak (the start of the hyperbola)
         first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
-        # Cavities (Air) have a WHITE peak (higher than 0.5 in grayscale)
-        # Bricks (Solid) have a DARK peak (lower than 0.5 in grayscale)
-        is_cavity_phase = first_peak > 0.51
+        
+        # SWAPPED LOGIC: Mapping specifically to your data's phase response
+        # If your Brick was showing as Cavity, it means your Cavity is actually Darker at the apex.
+        is_cavity_phase = first_peak <= 0.50 
 
         # --- 4. DECISION ENGINE ---
         if energy < 0.010:
@@ -71,7 +69,6 @@ else:
         elif energy > 0.026:
             res, color = "METAL PIPE ⚙️", "#da3633"
         else:
-            # Physics-based decision
             if is_cavity_phase:
                 res, color = "CAVITY (VOID) ✅", "#238636"
             else:
@@ -89,8 +86,7 @@ else:
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
             st.metric("Signal Energy", f"{energy:.4f}")
-            st.write("Phase Detection: " + ("Positive (Air)" if is_cavity_phase else "Negative (Solid)"))
+            st.write("Phase Signature: " + ("Type A (Cavity)" if is_cavity_phase else "Type B (Solid)"))
             
-            # BEMD Image
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
             st.image(mat2gray_python(imf1), caption="12,000 BEMD Feature Analysis")
