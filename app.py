@@ -53,21 +53,22 @@ else:
         roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
         energy = np.std(roi_ready)
         
-        # --- 3. THE SMART PHASE-TIEBREAKER ---
-        # We look at the top-center of the hyperbola (the apex)
-        # Cavities (Soil to Air) often show a "positive-first" reflection
-        apex_area = roi_ready[20:50, 50:70]
-        apex_brightness = np.mean(apex_area)
+        # --- 3. THE PHASE-LOCK LOGIC ---
+        # Analyze the central vertical slice where the hyperbola apex is strongest
+        center_slice = roi_ready[:, 55:65]
+        # Cavities usually have a sharper 'white' peak (Soil -> Air)
+        polarity_score = np.max(center_slice) / (np.abs(np.min(center_slice)) + 1e-7)
 
-        # --- FINAL PRECISION LOGIC ---
-        if energy < 0.0105:
+        # --- FINAL PRECISION CLASSIFICATION ---
+        if energy < 0.010:
             res, color = "NO TARGET ⚪", "#484f58"
-        elif energy > 0.0245:
+        elif energy > 0.024:
             res, color = "METAL PIPE ⚙️", "#da3633"
         else:
-            # TIE BREAKER: If the energy is in the middle range (0.0105 - 0.0245)
-            # Use apex brightness to decide if it's a "Hollow" Cavity or "Solid" Brick
-            if apex_brightness > 0.52: 
+            # Tie-breaker for Brick vs Cavity
+            # If the reflection is "Positive-Heavy" (Bright peak), it's a Cavity.
+            # If it's more balanced or Darker, it's a Brick.
+            if polarity_score > 1.02: 
                 res, color = "CAVITY (VOID) ✅", "#238636"
             else:
                 res, color = "BRICK / CONCRETE 🧱", "#d29922"
@@ -82,8 +83,8 @@ else:
 
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Signal Intensity", f"{energy:.4f}")
-            st.write(f"Apex Brightness: {apex_brightness:.4f}")
+            st.metric("Signal Energy", f"{energy:.4f}")
+            st.metric("Polarity Signature", f"{polarity_score:.3f}")
             
             # Show BEMD Features
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
