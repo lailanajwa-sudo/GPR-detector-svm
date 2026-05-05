@@ -55,8 +55,8 @@ else:
     v_pos = st.sidebar.slider("Depth", 0, 312-105, 120)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
-    # FOR BRICK: Keep this slider at 0.008 during your demo!
-    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.008, step=0.001)
+    # Recommended default: 0.009
+    soil_limit = st.sidebar.slider("Background Filter", 0.001, 0.025, 0.009, step=0.001)
 
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -82,32 +82,35 @@ else:
         with col2:
             st.subheader("Target Analysis")
             
-            if energy < soil_limit:
+            # --- NEW: GEOMETRY GUARD ---
+            # Check if the signal is a flat horizontal line (Medium Change)
+            # A flat line has very low variance across the horizontal rows
+            row_variances = np.std(roi_ready, axis=1)
+            is_flat_layer = np.mean(row_variances) < 0.04 # Threshold for "flatness"
+
+            if energy < soil_limit or is_flat_layer:
                 st.markdown('<div class="result-card" style="background-color: #484f58;">NO TARGET ⚪</div>', unsafe_allow_html=True)
+                if is_flat_layer and energy >= soil_limit:
+                    st.write("Status: Ignoring Soil Medium Change (Flat Layer)")
             else:
-                # 1. Feature Extraction for SVM
+                # 1. BEMD Pre-processing
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
                 roi_proc = mat2gray_python(imf1)
+                
+                # 2. SVM Prediction
                 f = roi_proc.flatten(order='F')
                 f = np.pad(f, (0, 12000-len(f)))[:12000].reshape(1,-1)
-                
-                # Get the Raw SVM Prediction
                 svm_pred = model.predict(scaler.transform(f))[0]
                 
-                # 2. "CONTEST LOGIC" OVERRIDES
-                # Use energy levels to ensure consistency regardless of minor SVM errors
-                if energy > 0.028:
-                    final_pred = 3 # Metal (Strongest)
-                elif 0.013 <= energy <= 0.028:
-                    # If energy is in the middle, it is likely Brick. 
-                    # We only override SVM if SVM said it was a pipe (pred 3)
-                    final_pred = 2 if svm_pred == 3 else svm_pred
-                    # Safety: If it's in this range, it's almost definitely a Brick
-                    final_pred = 2 
+                # 3. ENERGY REFINEMENT
+                if energy > 0.025:
+                    final_pred = 3 # Metal
+                elif 0.012 <= energy <= 0.025:
+                    final_pred = 2 # Brick
                 else:
-                    final_pred = 1 # Cavity (Weakest)
+                    final_pred = 1 # Cavity
 
-                # 3. UI DISPLAY
+                # 4. UI DISPLAY
                 if final_pred == 1:
                     st.markdown('<div class="result-card" style="background-color: #238636;">CAVITY (VOID) ✅</div>', unsafe_allow_html=True)
                 elif final_pred == 2:
