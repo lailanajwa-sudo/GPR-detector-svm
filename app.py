@@ -33,8 +33,8 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     return img[np.ix_(rowIndex, colIndex)]
 
 # --- 2. UI ---
-st.set_page_config(page_title="Deep-Scan GPR AI", layout="wide")
-st.title("📡 Autonomous Subsurface Classifier")
+st.set_page_config(page_title="GPR-X Detection SVM", layout="wide")
+st.title("📡 GPR-X Detection (SVM-BEMD)")
 
 if model is None:
     st.error("Missing AI Assets!")
