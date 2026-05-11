@@ -13,11 +13,11 @@ import time
 def load_assets():
     base_path = os.path.dirname(__file__)
     try:
-        # Loading files from your repository
         model = joblib.load(os.path.join(base_path, 'svm_model.pkl'))
         scaler = joblib.load(os.path.join(base_path, 'scaler.pkl'))
         return model, scaler
-    except: return None, None
+    except:
+        return None, None
 
 model, scaler = load_assets()
 
@@ -29,36 +29,42 @@ def mat2gray(img):
 def run_intelligent_scan(img_array, model, scaler, threshold=0.90):
     h, w = img_array.shape
     roi_h, roi_w = 100, 120
-    # Increase stride to 60 for significantly faster scanning
+    # Stride 60 is fast and effective for hyperbolas
     stride = 60 
     
     detections = []
-    # Standardize pixel values to match signal distribution in SVM.ipynb
+    
+    # NORMALIZATION: This helps the AI distinguish Cavity from Metal
+    # by centering the pixel intensities around zero.
     img_std = (img_array - np.mean(img_array)) / (np.std(img_array) + 1e-7)
 
     y_steps = list(range(0, h - roi_h, stride))
-    progress_bar = st.progress(0)
+    
+    # Progress Indicators
     status_text = st.empty()
+    progress_bar = st.progress(0)
 
     for i, y in enumerate(y_steps):
-        # Update progress
-        progress_bar.progress((i + 1) / len(y_steps))
-        status_text.text(f"Scanning depth... {int(((i+1)/len(y_steps))*100)}%")
+        # Update the loading line
+        percent = (i + 1) / len(y_steps)
+        progress_bar.progress(percent)
+        status_text.text(f"Scanning Radargram: {int(percent*100)}% complete...")
 
         for x in range(0, w - roi_w, stride):
             window = img_std[y:y+roi_h, x:x+roi_w]
+            # BEMD Filter equivalent (Detrending)
             clean = detrend(detrend(window, axis=0), axis=1)
             
-            # Flatten to exactly 12,000 features for the scaler
+            # Use exactly 12,000 features to match StandardScaler
             features = clean.flatten().reshape(1, -1)
             
             if features.shape[1] == 12000:
-                # Use probabilities to filter "False Positives"
+                # Use Probability to filter False Positives
                 probs = model.predict_proba(scaler.transform(features))[0]
                 best_class_idx = np.argmax(probs)
                 confidence = probs[best_class_idx]
                 
-                # Only keep detections with high certainty
+                # Check confidence threshold
                 if confidence >= threshold:
                     detections.append({
                         'x': x, 'y': y, 
@@ -72,13 +78,14 @@ def run_intelligent_scan(img_array, model, scaler, threshold=0.90):
 
 # --- 3. UI LAYOUT ---
 st.set_page_config(page_title="GPR-X Precision", layout="wide")
-st.title("📡 GPR-X Precision Auto-Detection")
+st.title("📡 GPR-X Precise Auto-Detection")
 
 uploaded_file = st.sidebar.file_uploader("Upload Radargram Image", type=["jpg", "png", "jpeg"])
+# Slider to control how strict the AI is
 conf_limit = st.sidebar.slider("Confidence Threshold", 0.50, 0.99, 0.90)
 
 if uploaded_file and model:
-    # Process image for the AI
+    # Prepare image
     img = Image.open(uploaded_file).convert('L')
     img_np = np.array(img).astype(np.float64)
     display_img = mat2gray(img_np)
@@ -92,26 +99,31 @@ if uploaded_file and model:
         fig, ax = plt.subplots(figsize=(12, 8))
         ax.imshow(display_img, cmap='gray', aspect='auto')
         
-        # Color mapping from your reference screenshot
+        # Style mapping to match your requested output
         styles = {
             1: ("cavity", "#0000FF"),      # Blue
             2: ("brick", "#FFFFFF"),       # White
             3: ("metal_pipe", "#00FFFF")   # Cyan
         }
 
-        for d in found:
-            name, color = styles[d['class']]
-            # Draw professional bounding box
-            rect = patches.Rectangle((d['x'], d['y']), 120, 100, linewidth=2, edgecolor=color, fill=False)
-            ax.add_patch(rect)
-            # Add label with confidence score
-            ax.text(d['x'], d['y']-5, f"{name} {d['conf']:.2f}", color=color, weight='bold', fontsize=10, 
-                    bbox=dict(facecolor='black', alpha=0.5, edgecolor='none', pad=1))
+        if not found:
+            st.warning("No targets detected. Try lowering the Confidence Threshold.")
+        else:
+            for d in found:
+                name, color = styles[d['class']]
+                # Draw professional bounding box
+                rect = patches.Rectangle((d['x'], d['y']), 120, 100, linewidth=2, edgecolor=color, fill=False)
+                ax.add_patch(rect)
+                # Add label with confidence score
+                ax.text(d['x'], d['y']-5, f"{name} {d['conf']:.2f}", color=color, weight='bold', fontsize=10, 
+                        bbox=dict(facecolor='black', alpha=0.5, edgecolor='none', pad=1))
 
+        # True Crop: Remove axes and white margins
         plt.axis('off')
         plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
         st.pyplot(fig, use_container_width=True)
-        st.success(f"Scan complete in {duration:.1f}s. Found {len(found)} targets.")
+        
+        st.success(f"Scan finished in {duration:.1f}s. {len(found)} objects identified.")
 
 elif not model:
-    st.error("AI Assets not found! Ensure svm_model.pkl and scaler.pkl are in your folder.")
+    st.error("AI Assets (svm_model.pkl / scaler.pkl) not found in directory!")
