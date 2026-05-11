@@ -10,14 +10,19 @@ from PIL import Image
 # --- 1. ASSET LOADING ---
 @st.cache_resource
 def load_assets():
-    base_path = os.path.dirname(__file__)
+    base_path = os.path.dirname(os.path.abspath(__file__))
+    model_path = os.path.join(base_path, 'svm_model.pkl')
+    scaler_path = os.path.join(base_path, 'scaler.pkl')
+    
     try:
-        # Loading the model and scaler trained in your SVM.ipynb
-        model = joblib.load(os.path.join(base_path, 'svm_model.pkl'))
-        scaler = joblib.load(os.path.join(base_path, 'scaler.pkl'))
+        if not os.path.exists(model_path) or not os.path.exists(scaler_path):
+            return None, None
+            
+        model = joblib.load(model_path)
+        scaler = joblib.load(scaler_path)
         return model, scaler
     except Exception as e:
-        st.error(f"Error loading assets: {e}")
+        st.error(f"Logic Error: {e}")
         return None, None
 
 model, scaler = load_assets()
@@ -32,44 +37,32 @@ st.set_page_config(page_title="GPR-X Image Detector", layout="wide")
 st.title("📡 GPR-X Detection (Image-based SVM)")
 
 if model is None:
-    st.error("⚠️ AI Assets (svm_model.pkl / scaler.pkl) not found! Please ensure they are in the same folder as this script.")
+    st.error("⚠️ AI Assets not found! Please ensure svm_model.pkl and scaler.pkl are in the GitHub folder and reboot the app.")
 else:
-    # Sidebar for control
     st.sidebar.header("Scan Settings")
-    
-    # File uploader for images instead of .rd3/.rad
     uploaded_file = st.sidebar.file_uploader("Upload Radargram Image", type=["jpg", "jpeg", "png"])
 
     if uploaded_file:
-        # Load image and convert to grayscale to match numerical matrix processing
+        # Load and convert to grayscale
         raw_img = Image.open(uploaded_file).convert('L')
         full_img = np.array(raw_img).astype(np.float64)
-        
-        # Normalize for visualization
         display_img = mat2gray_python(full_img)
         
-        # Dynamic sliders based on uploaded image dimensions
+        # Sliders
         img_h, img_w = full_img.shape
         v_pos = st.sidebar.slider("Vertical Position (Depth)", 0, max(0, img_h - 100), 0)
         h_pos = st.sidebar.slider("Horizontal Position (Trace)", 0, max(0, img_w - 120), 0)
         
         # --- 3. FEATURE EXTRACTION ---
-        # Extract the 100x120 Region of Interest (ROI)
         roi = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
-        
-        # Apply filtering (Detrending) to mirror BEMD feature cleaning
         imf_cleaned = detrend(detrend(roi, axis=0), axis=1)
-        
-        # Flatten to exactly 12,000 features (100 * 120)
         features = imf_cleaned.flatten().reshape(1, -1)
         
         # --- 4. CLASSIFICATION ---
-        # Ensure the feature count matches the Scaler/SVM expectation exactly
         if features.shape[1] == 12000:
             features_scaled = scaler.transform(features)
             prediction = model.predict(features_scaled)[0]
             
-            # Map labels from SVM training (1=Cavity, 2=Brick, 3=Metal)
             results_map = {
                 1: ("CAVITY (VOID) ✅", "#238636"),
                 2: ("BRICK / CONCRETE 🧱", "#d29922"),
@@ -77,17 +70,23 @@ else:
             }
             res_text, color = results_map.get(prediction, ("UNKNOWN ❓", "#484f58"))
 
-            # --- 5. DISPLAY RESULTS ---
+            # --- 5. DISPLAY RESULTS (CROPPED FOCUS) ---
             col1, col2 = st.columns([2, 1])
             
             with col1:
-                fig, ax = plt.subplots()
+                # Remove all margins and padding for a "Cropped" look
+                fig, ax = plt.subplots(figsize=(10, 7))
                 ax.imshow(display_img, cmap='gray', aspect='auto')
-                # Add bounding box for ROI
+                
+                # Green bounding box
                 rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
                 ax.add_patch(rect)
+                
+                # CROP LOGIC: Hide axes, ticks, and labels
                 plt.axis('off')
-                st.pyplot(fig)
+                plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                
+                st.pyplot(fig, use_container_width=True)
 
             with col2:
                 st.markdown(f'''
@@ -98,7 +97,7 @@ else:
                     ''', unsafe_allow_html=True)
                 
                 st.write("---")
-                st.image(mat2gray_python(imf_cleaned), caption="12,000 BEMD Filtered Features (Input to SVM)")
-                st.info("Analysis complete. The SVM model identifies materials based on pixel intensity patterns.")
+                st.image(mat2gray_python(imf_cleaned), caption="12,000 BEMD Filtered Features")
+                st.info("The system analyzes the pattern inside the green box to identify the material.")
         else:
-            st.error(f"Feature mismatch! Model expects 12000 features, but ROI produced {features.shape[1]}.")
+            st.error(f"Feature mismatch! Expected 12000, got {features.shape[1]}.")
