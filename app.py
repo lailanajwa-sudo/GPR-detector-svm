@@ -99,4 +99,23 @@ if uploaded_file and model:
         # Styles to match your hyperbola detection request
         styles = {
             1: ("cavity", "#0000FF"),      # Blue
-            2:
+            2: ("brick", "#FFFFFF"),       # White
+            3: ("metal_pipe", "#00FFFF")   # Cyan
+        }
+
+        for d in found:
+            name, color = styles[d['class']]
+            # Draw professional bounding box
+            rect = patches.Rectangle((d['x'], d['y']), 120, 100, linewidth=2, edgecolor=color, fill=False)
+            ax.add_patch(rect)
+            # Label with confidence like your 2nd image
+            ax.text(d['x'], d['y']-5, f"{name} {d['conf']:.2f}", color=color, weight='bold', fontsize=10, 
+                    bbox=dict(facecolor='black', alpha=0.5, edgecolor='none', pad=1))
+
+        plt.axis('off')
+        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        st.pyplot(fig, use_container_width=True)
+        st.success(f"Scan complete in {duration:.1f}s. Found {len(found)} objects.")
+
+elif not model:
+    st.error("AI Assets (svm_model.pkl / scaler.pkl) not found!")
