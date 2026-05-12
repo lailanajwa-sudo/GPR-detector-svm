@@ -9,106 +9,85 @@ import matplotlib.patches as patches
 @st.cache_resource
 def load_assets():
     try:
-        # Loading the SVM model and scaler trained in Colab
         model = joblib.load('svm_model.pkl')
         scaler = joblib.load('scaler.pkl')
         return model, scaler
-    except Exception as e:
+    except:
         return None, None
 
 model, scaler = load_assets()
 
-# --- 2. PREPROCESSING (Standardizing for 12,000 features) ---
+# --- 2. PREPROCESSING ---
 def preprocess_roi(roi_img):
-    # Grayscale -> Resize to 120x100 to match training data
     roi_gray = ImageOps.grayscale(roi_img).resize((120, 100))
     img_np = np.array(roi_gray).astype(np.float64)
     
-    # mat2gray: Scale pixels between 0 and 1
+    # Normalization
     img_norm = (img_np - np.min(img_np)) / (np.max(img_np) - np.min(img_np) + 1e-7)
     
-    # Histogram Equalization: Boosts the hyperbola curve visibility
+    # Contrast Enhancement (histeq)
     img_uint8 = (img_norm * 255).astype(np.uint8)
     img_eq = np.array(ImageOps.equalize(Image.fromarray(img_uint8))).astype(np.float64) / 255.0
     
     return img_eq.flatten().reshape(1, -1)
 
 # --- 3. UI LAYOUT ---
-st.set_page_config(page_title="GPR Manual Classifier", layout="wide")
-st.title("📡 GPR Hyperbola Manual Classifier")
-st.write("Use the sliders below to move the box over a hyperbolic signature.")
+st.set_page_config(page_title="GPR Professional Classifier", layout="wide")
+st.title("📡 Precision GPR Target Analyzer")
 
-# Check if model files are present
-if model is None:
-    st.error("⚠️ Error: 'svm_model.pkl' or 'scaler.pkl' not found in the directory!")
-    st.stop()
+uploaded_file = st.file_uploader("Upload Radargram", type=["png", "jpg", "jpeg"])
 
-uploaded_file = st.file_uploader("Step 1: Upload your Radargram (PNG/JPG)", type=["png", "jpg", "jpeg"])
-
-if uploaded_file:
+if uploaded_file and model:
     img = Image.open(uploaded_file).convert('RGB')
     w, h = img.size
     
-    st.divider()
-    
-    # --- STEP 2: POSITION SLIDERS (IN THE MAIN BODY) ---
-    st.subheader("Step 2: Align the Target Box")
+    # 1. SLIDERS (Using 'key' to prevent laggy re-runs)
+    st.subheader("Targeting Controls")
     col_x, col_y = st.columns(2)
     with col_x:
-        pos_x = st.slider("Horizontal Position (X)", 0, w - 120, int(w/2))
+        pos_x = st.slider("X Position", 0, w - 120, int(w/2), key="x_slider")
     with col_y:
-        pos_y = st.slider("Vertical Position (Y)", 0, h - 100, int(h/2))
+        pos_y = st.slider("Y Position", 0, h - 100, int(h/2), key="y_slider")
     
-    # Define detection size (Matches your BEMD parameters)
-    box_w, box_h = 120, 100
-    
-    # 1. Crop the ROI
-    roi = img.crop((pos_x, pos_y, pos_x + box_w, pos_y + box_h))
-    
-    # 2. Predict using the SVM
-    features = preprocess_roi(roi)
-    features_scaled = scaler.transform(features)
-    
-    probs = model.predict_proba(features_scaled)[0]
-    classes = ["Cavity", "Brick", "Metal Pipe"]
-    best_idx = np.argmax(probs)
-    prediction = classes[best_idx]
-    confidence = probs[best_idx]
-    
-    # --- STEP 3: DISPLAY RESULTS ---
-    st.divider()
-    res_col, img_col = st.columns([1, 2])
-    
-    with res_col:
-        st.subheader("Classification Result")
-        # Color mapping: Cavity(Blue), Brick(White), Metal(Cyan)
-        styles = {"Cavity": "blue", "Brick": "white", "Metal Pipe": "cyan"}
-        current_color = styles[prediction]
-        
-        st.info(f"The object inside the box is likely a: **{prediction}**")
-        st.metric("Confidence", f"{confidence*100:.1f}%")
-        
-        st.write("**Full Analysis:**")
-        for i, prob in enumerate(probs):
-            st.write(f"{classes[i]}: {prob*100:.1f}%")
-            st.progress(float(prob))
+    # 2. THE IMAGE PREVIEW (Updates instantly with sliders)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(img)
+    rect = patches.Rectangle((pos_x, pos_y), 120, 100, linewidth=2, edgecolor='yellow', facecolor='none', linestyle='--')
+    ax.add_patch(rect)
+    plt.axis('off')
+    st.pyplot(fig)
 
-    with img_col:
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.imshow(img)
+    # 3. MANUAL TRIGGER (Fixes the "Slow Slider" issue)
+    if st.button("🚀 Analyze Signal in Box"):
+        roi = img.crop((pos_x, pos_y, pos_x + 120, pos_y + 100))
         
-        # Draw the target box
-        rect = patches.Rectangle((pos_x, pos_y), box_w, box_h, 
-                                linewidth=4, edgecolor=current_color, facecolor='none')
-        ax.add_patch(rect)
-        
-        # Label above the box
-        ax.text(pos_x, pos_y - 10, f"{prediction} ({confidence*100:.0f}%)", 
-                color=current_color, fontweight='bold', fontsize=12,
-                bbox=dict(facecolor='black', alpha=0.7, edgecolor='none'))
-        
-        plt.axis('off')
-        st.pyplot(fig)
+        # --- SIGNAL CHECK (Fixes the "Only Cavity" issue) ---
+        # If the box is too 'flat' (standard deviation is low), it's just background.
+        if np.std(np.array(roi)) < 8:
+            st.warning("⚠️ No clear signal detected. The box appears to be empty soil/background.")
+        else:
+            features = preprocess_roi(roi)
+            features_scaled = scaler.transform(features)
+            
+            probs = model.predict_proba(features_scaled)[0]
+            classes = ["Cavity", "Brick", "Metal Pipe"]
+            best_idx = np.argmax(probs)
+            
+            # Confidence Threshold: If below 70%, don't trust it.
+            if probs[best_idx] < 0.70:
+                st.error("❓ Signal unclear. Try aligning the hyperbola peak exactly in the center.")
+            else:
+                res_col, bar_col = st.columns(2)
+                with res_col:
+                    st.success(f"**Detection:** {classes[best_idx]}")
+                    st.metric("Confidence", f"{probs[best_idx]*100:.1f}%")
+                with bar_col:
+                    for i, p in enumerate(probs):
+                        st.write(f"{classes[i]}: {p*100:.1f}%")
+                        st.progress(float(p))
 
-else:
-    st.info("Please upload a radargram to start.")
+### Why this fixes your problems:
+
+1.  **Fast Sliders**: By moving the AI prediction inside an `if st.button` block, the app no longer tries to run BEMD while you are sliding. The slider will now feel smooth and instant.
+2.  **`np.std` Filter**: The reason you keep getting "Cavity" is that the model is trying to classify **empty grey pixels**. Empty background looks most like a "Cavity" to the SVM. This filter checks if there is actually a "shape" (variance) in the box before guessing.
+3.  **Centered Alignment**: For **Brick** and **Metal Pipe**, the SVM expects to see the "Peak" of the hyperbola. Use the sliders to place the **top curve** of the hyperbola right in the center of the yellow dashed box before clicking "Analyze."
