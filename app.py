@@ -8,124 +8,99 @@ from PIL import Image, ImageOps
 import time
 
 # --- 1. ASSET LOADING ---
-@st.cache_resource
+# Ensure these files are in the same folder as app.py
 def load_assets():
-    # Load the model and scaler you trained in Colab
     try:
         model = joblib.load('svm_model.pkl')
         scaler = joblib.load('scaler.pkl')
         return model, scaler
-    except:
+    except Exception as e:
+        st.error(f"Error loading model files: {e}")
         return None, None
 
 model, scaler = load_assets()
 
-# --- 2. PREPROCESSING FUNCTIONS (Mirroring MATLAB) ---
+# --- 2. PREPROCESSING ---
 def preprocess_roi(roi_img):
-    """
-    Standardizes the ROI to match the MATLAB BEMD extraction logic.
-    """
-    # Convert to grayscale and resize to 100x120
+    # Grayscale -> Resize 120x100 -> Normalize -> Equalize (histeq)
     roi_gray = ImageOps.grayscale(roi_img).resize((120, 100))
     img_np = np.array(roi_gray).astype(np.float64)
-    
-    # mat2gray equivalent
     img_norm = (img_np - np.min(img_np)) / (np.max(img_np) - np.min(img_np) + 1e-7)
-    
-    # Histogram Equalization (histeq) equivalent to boost hyperbola contrast
-    # Using a simple cumulative distribution function (CDF) mapping
     img_uint8 = (img_norm * 255).astype(np.uint8)
     img_eq = np.array(ImageOps.equalize(Image.fromarray(img_uint8))).astype(np.float64) / 255.0
-    
-    # Flatten to 12,000 features
     return img_eq.flatten().reshape(1, -1)
 
-# --- 3. DETECTION ENGINE ---
-def run_detection(full_img, threshold=0.90):
-    w, h = full_img.size
-    roi_w, roi_h = 120, 100
-    stride = 40  # Moves the window by 40 pixels each time
-    
-    detections = []
-    
-    # Loading indicators
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    # Calculate total steps for the progress bar
-    x_steps = range(0, w - roi_w, stride)
-    y_steps = range(0, h - roi_h, stride)
-    total_steps = len(x_steps) * len(y_steps)
-    current_step = 0
-
-    for y in y_steps:
-        for x in x_steps:
-            current_step += 1
-            progress_bar.progress(current_step / total_steps)
-            status_text.text(f"Analyzing scan area... {int((current_step/total_steps)*100)}%")
-            
-            # Extract ROI
-            roi = full_img.crop((x, y, x + roi_w, y + roi_h))
-            features = preprocess_roi(roi)
-            
-            # Predict
-            features_scaled = scaler.transform(features)
-            probs = model.predict_proba(features_scaled)[0]
-            best_class = np.argmax(probs)
-            confidence = probs[best_class]
-            
-            # Only record if it's not "background" (High confidence filter)
-            if confidence >= threshold:
-                detections.append({
-                    'box': [x, y, roi_w, roi_h],
-                    'class': best_class + 1,
-                    'conf': confidence
-                })
-                
-    progress_bar.empty()
-    status_text.empty()
-    return detections
-
-# --- 4. STREAMLIT UI ---
-st.set_page_config(page_title="GPR-X Multiclass Detector", layout="wide")
+# --- 3. UI LAYOUT ---
+st.set_page_config(page_title="GPR-X Multi-Target", layout="wide")
 st.title("📡 GPR-X Intelligent Multi-Target Detector")
-st.write("Upload a radargram to identify Cavities, Bricks, and Metal Pipes.")
+st.write("Upload a radargram to identify **Cavities**, **Bricks**, and **Metal Pipes**.")
 
-uploaded_file = st.sidebar.file_uploader("Upload PNG/JPG Radargram", type=["png", "jpg", "jpeg"])
-conf_threshold = st.sidebar.slider("Detection Confidence", 0.70, 0.99, 0.92)
+# THE UPLOAD BUTTON - Placed here to ensure it's always visible
+uploaded_file = st.file_uploader("Choose a GPR image (PNG, JPG, JPEG)...", type=["png", "jpg", "jpeg"])
 
-if uploaded_file and model:
+# Sidebar for controls
+st.sidebar.header("Scan Settings")
+conf_threshold = st.sidebar.slider("Confidence Threshold", 0.50, 0.99, 0.85)
+stride_val = st.sidebar.select_slider("Scan Detail (Stride)", options=[20, 40, 60, 80], value=40)
+
+if uploaded_file is not None:
+    # Display the uploaded image immediately
     input_img = Image.open(uploaded_file).convert('RGB')
+    st.image(input_img, caption="Uploaded Radargram", use_container_width=True)
     
-    if st.sidebar.button("🔍 Run Full Scan"):
-        start_time = time.time()
-        results = run_detection(input_img, conf_threshold)
-        duration = time.time() - start_time
-        
-        # Plotting results
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.imshow(input_img)
-        
-        # Styling mapping
-        # 1: Cavity (Blue), 2: Brick (White), 3: Metal Pipe (Cyan)
-        styles = {
-            1: ("Cavity", "blue"),
-            2: ("Brick", "white"),
-            3: ("Metal Pipe", "cyan")
-        }
-        
-        for det in results:
-            label, color = styles[det['class']]
-            x, y, w, h = det['box']
+    if st.button("🔍 Start Intelligent Scan"):
+        if model is None:
+            st.error("Cannot scan: Model files (svm_model.pkl) are missing!")
+        else:
+            # Running Detection
+            w, h = input_img.size
+            roi_w, roi_h = 120, 100
+            detections = []
             
-            rect = patches.Rectangle((x, y), w, h, linewidth=2, edgecolor=color, facecolor='none')
-            ax.add_patch(rect)
-            ax.text(x, y-5, f"{label} {det['conf']:.2f}", color=color, fontweight='bold', fontsize=8,
-                    bbox=dict(facecolor='black', alpha=0.5, edgecolor='none', pad=1))
-        
-        plt.axis('off')
-        st.pyplot(fig)
-        st.success(f"Scan complete in {duration:.1f}s. Identified {len(results)} targets.")
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Scanning loop
+            y_steps = range(0, h - roi_h, stride_val)
+            x_steps = range(0, w - roi_w, stride_val)
+            total = len(y_steps) * len(x_steps)
+            count = 0
 
-elif not model:
-    st.error("Missing AI Models! Please upload 'svm_model.pkl' and 'scaler.pkl' to the app directory.")
+            start_time = time.time()
+            for y in y_steps:
+                for x in x_steps:
+                    count += 1
+                    progress_bar.progress(count / total)
+                    status_text.text(f"Scanning row {y}...")
+                    
+                    roi = input_img.crop((x, y, x + roi_w, y + roi_h))
+                    feat = preprocess_roi(roi)
+                    feat_scaled = scaler.transform(feat)
+                    
+                    probs = model.predict_proba(feat_scaled)[0]
+                    cls_idx = np.argmax(probs)
+                    conf = probs[cls_idx]
+                    
+                    if conf >= conf_threshold:
+                        detections.append({'box': [x, y], 'class': cls_idx + 1, 'conf': conf})
+
+            # Show Results
+            fig, ax = plt.subplots(figsize=(12, 7))
+            ax.imshow(input_img)
+            
+            # Map labels to colors from your sources
+            styles = {1: ("Cavity", "blue"), 2: ("Brick", "white"), 3: ("Metal", "cyan")}
+            
+            for d in detections:
+                label, color = styles[d['class']]
+                bx, by = d['box']
+                rect = patches.Rectangle((bx, by), roi_w, roi_h, linewidth=2, edgecolor=color, facecolor='none')
+                ax.add_patch(rect)
+                ax.text(bx, by-10, f"{label} {d['conf']:.2f}", color=color, fontweight='bold', 
+                        bbox=dict(facecolor='black', alpha=0.6, edgecolor='none'))
+            
+            plt.axis('off')
+            st.pyplot(fig)
+            st.success(f"Scan complete in {time.time()-start_time:.1f}s. Found {len(detections)} targets.")
+else:
+    st.info("Waiting for image upload...")
