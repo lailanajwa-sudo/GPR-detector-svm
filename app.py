@@ -4,99 +4,96 @@ import joblib
 from PIL import Image, ImageOps
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-import time
 
-# --- ASSET LOADING ---
+# --- 1. ASSET LOADING ---
 def load_assets():
     try:
+        # Loading the SVM model and scaler trained in Colab
         model = joblib.load('svm_model.pkl')
         scaler = joblib.load('scaler.pkl')
         return model, scaler
-    except:
+    except Exception as e:
+        st.error(f"Model files missing: {e}")
         return None, None
 
 model, scaler = load_assets()
 
-# --- PREPROCESSING (Same as Training) ---
+# --- 2. PREPROCESSING (Same as MATLAB/Colab Training) ---
 def preprocess_roi(roi_img):
+    # Grayscale -> Resize to 120x100 (exactly 12,000 features)
     roi_gray = ImageOps.grayscale(roi_img).resize((120, 100))
     img_np = np.array(roi_gray).astype(np.float64)
-    # Normalize
+    
+    # mat2gray equivalent
     img_norm = (img_np - np.min(img_np)) / (np.max(img_np) - np.min(img_np) + 1e-7)
-    # Equalize to highlight hyperbolic edges
+    
+    # Histogram Equalization to boost hyperbolic contrast (histeq)
     img_uint8 = (img_norm * 255).astype(np.uint8)
     img_eq = np.array(ImageOps.equalize(Image.fromarray(img_uint8))).astype(np.float64) / 255.0
+    
     return img_eq.flatten().reshape(1, -1)
 
-# --- UI SETTINGS ---
-st.title("📡 GPR Hyperbolic Signature Detector")
+# --- 3. STREAMLIT UI ---
+st.set_page_config(page_title="GPR Interactive Classifier", layout="wide")
+st.title("📡 Interactive GPR Target Classifier")
+st.write("Manually move the box over a hyperbolic signature to classify it.")
+
 uploaded_file = st.file_uploader("Upload Radargram", type=["png", "jpg", "jpeg"])
 
-# Sidebar Controls for "Clean" Detection
-st.sidebar.header("Hyperbola Tuning")
-conf_threshold = st.sidebar.slider("Confidence Level", 0.80, 0.99, 0.94)
-# Surface Offset helps avoid the top horizontal direct coupling line
-surface_offset = st.sidebar.slider("Vertical Offset (Skip Surface)", 0, 200, 80)
-
 if uploaded_file and model:
-    input_img = Image.open(uploaded_file).convert('RGB')
-    st.image(input_img, caption="Original GPR Data")
+    img = Image.open(uploaded_file).convert('RGB')
+    w, h = img.size
     
-    if st.button("🔍 Detect Hyperbolas"):
-        w, h = input_img.size
-        roi_w, roi_h = 120, 100
-        stride = 30 
-        detections = []
+    # --- INTERACTIVE SLIDERS ---
+    st.sidebar.header("🕹️ Position Control")
+    pos_x = st.sidebar.slider("Move Box (X Direction)", 0, w - 120, int(w/2))
+    pos_y = st.sidebar.slider("Move Box (Y Direction)", 0, h - 100, int(h/2))
+    
+    # Define Target Size (Matches Training)
+    box_w, box_h = 120, 100
+    
+    # 1. Extract the ROI based on user sliders
+    roi = img.crop((pos_x, pos_y, pos_x + box_w, pos_y + box_h))
+    
+    # 2. Preprocess and Predict
+    features = preprocess_roi(roi)
+    features_scaled = scaler.transform(features)
+    
+    probs = model.predict_proba(features_scaled)[0]
+    classes = ["Cavity", "Brick", "Metal Pipe"]
+    best_idx = np.argmax(probs)
+    prediction = classes[best_idx]
+    confidence = probs[best_idx]
+    
+    # --- DISPLAY RESULTS ---
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        fig, ax = plt.subplots()
+        ax.imshow(img)
         
-        progress = st.progress(0)
+        # Color mapping: Cavity(Blue), Brick(White), Metal(Cyan)
+        styles = {"Cavity": "blue", "Brick": "white", "Metal Pipe": "cyan"}
+        box_color = styles[prediction]
         
-        # We start 'y' at surface_offset to avoid the direct coupling line at the top
-        y_range = range(surface_offset, h - roi_h, stride)
-        x_range = range(0, w - roi_w, stride)
-        
-        total_steps = len(y_range) * len(x_range)
-        step = 0
-
-        for y in y_range:
-            for x in x_range:
-                step += 1
-                progress.progress(step / total_steps)
-                
-                roi = input_img.crop((x, y, x + roi_w, y + roi_h))
-                
-                # SIG-CHECK: Only scan if the area isn't "flat" (prevents background boxes)
-                if np.std(np.array(roi)) > 5: 
-                    feat = preprocess_roi(roi)
-                    feat_scaled = scaler.transform(feat)
-                    
-                    probs = model.predict_proba(feat_scaled)[0]
-                    idx = np.argmax(probs)
-                    conf = probs[idx]
-                    
-                    if conf >= conf_threshold:
-                        detections.append({'box': [x, y], 'class': idx + 1, 'conf': conf})
-
-        # --- DRAWING RESULTS ---
-        fig, ax = plt.subplots(figsize=(10, 6))
-        ax.imshow(input_img)
-        
-        # Match colors to your provided screenshots
-        styles = {
-            1: ("Cavity", "blue"),      # Blue box for cavity
-            2: ("Brick", "white"),      # White box for brick
-            3: ("Metal Pipe", "cyan")   # Cyan/Light Blue for metal
-        }
-        
-        for d in detections:
-            label, color = styles[d['class']]
-            bx, by = d['box']
-            
-            # Draw bounding box only around the signature
-            rect = patches.Rectangle((bx, by), roi_w, roi_h, linewidth=2, edgecolor=color, facecolor='none')
-            ax.add_patch(rect)
-            ax.text(bx, by - 5, f"{label} {d['conf']:.2f}", color=color, fontsize=7, fontweight='bold',
-                    bbox=dict(facecolor='black', alpha=0.5, edgecolor='none'))
-            
+        # Draw the manual bounding box
+        rect = patches.Rectangle((pos_x, pos_y), box_w, box_h, linewidth=3, edgecolor=box_color, facecolor='none')
+        ax.add_patch(rect)
+        ax.set_title(f"Targeting: {pos_x}, {pos_y}")
         plt.axis('off')
         st.pyplot(fig)
-        st.success(f"Detection complete. Found {len(detections)} hyperbolic signatures.")
+        
+    with col2:
+        st.subheader("Classification Result")
+        st.metric(label="Detected Object", value=prediction)
+        st.metric(label="Confidence", value=f"{confidence*100:.2f}%")
+        
+        st.write("**Probability Breakdown:**")
+        for i, prob in enumerate(probs):
+            st.write(f"{classes[i]}: {prob*100:.1f}%")
+            st.progress(float(prob))
+
+        st.info("💡 Tip: Align the box so the hyperbola curve is centered inside.")
+
+else:
+    st.info("Please upload a radargram to begin interactive classification.")
