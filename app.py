@@ -4,126 +4,128 @@ import joblib
 import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
-from scipy.signal import detrend
-from PIL import Image
+from PIL import Image, ImageOps
 import time
 
 # --- 1. ASSET LOADING ---
 @st.cache_resource
 def load_assets():
-    base_path = os.path.dirname(__file__)
+    # Load the model and scaler you trained in Colab
     try:
-        model = joblib.load(os.path.join(base_path, 'svm_model.pkl'))
-        scaler = joblib.load(os.path.join(base_path, 'scaler.pkl'))
+        model = joblib.load('svm_model.pkl')
+        scaler = joblib.load('scaler.pkl')
         return model, scaler
     except:
         return None, None
 
 model, scaler = load_assets()
 
-def mat2gray(img):
-    mn, mx = np.min(img), np.max(img)
-    return (img - mn) / (mx - mn + 1e-7)
+# --- 2. PREPROCESSING FUNCTIONS (Mirroring MATLAB) ---
+def preprocess_roi(roi_img):
+    """
+    Standardizes the ROI to match the MATLAB BEMD extraction logic.
+    """
+    # Convert to grayscale and resize to 100x120
+    roi_gray = ImageOps.grayscale(roi_img).resize((120, 100))
+    img_np = np.array(roi_gray).astype(np.float64)
+    
+    # mat2gray equivalent
+    img_norm = (img_np - np.min(img_np)) / (np.max(img_np) - np.min(img_np) + 1e-7)
+    
+    # Histogram Equalization (histeq) equivalent to boost hyperbola contrast
+    # Using a simple cumulative distribution function (CDF) mapping
+    img_uint8 = (img_norm * 255).astype(np.uint8)
+    img_eq = np.array(ImageOps.equalize(Image.fromarray(img_uint8))).astype(np.float64) / 255.0
+    
+    # Flatten to 12,000 features
+    return img_eq.flatten().reshape(1, -1)
 
-# --- 2. INTELLIGENT SCAN ENGINE ---
-def run_intelligent_scan(img_array, model, scaler, threshold=0.90):
-    h, w = img_array.shape
-    roi_h, roi_w = 100, 120
-    # Stride 60 is fast and effective for hyperbolas
-    stride = 60 
+# --- 3. DETECTION ENGINE ---
+def run_detection(full_img, threshold=0.90):
+    w, h = full_img.size
+    roi_w, roi_h = 120, 100
+    stride = 40  # Moves the window by 40 pixels each time
     
     detections = []
     
-    # NORMALIZATION: This helps the AI distinguish Cavity from Metal
-    # by centering the pixel intensities around zero.
-    img_std = (img_array - np.mean(img_array)) / (np.std(img_array) + 1e-7)
-
-    y_steps = list(range(0, h - roi_h, stride))
-    
-    # Progress Indicators
-    status_text = st.empty()
+    # Loading indicators
     progress_bar = st.progress(0)
-
-    for i, y in enumerate(y_steps):
-        # Update the loading line
-        percent = (i + 1) / len(y_steps)
-        progress_bar.progress(percent)
-        status_text.text(f"Scanning Radargram: {int(percent*100)}% complete...")
-
-        for x in range(0, w - roi_w, stride):
-            window = img_std[y:y+roi_h, x:x+roi_w]
-            # BEMD Filter equivalent (Detrending)
-            clean = detrend(detrend(window, axis=0), axis=1)
-            
-            # Use exactly 12,000 features to match StandardScaler
-            features = clean.flatten().reshape(1, -1)
-            
-            if features.shape[1] == 12000:
-                # Use Probability to filter False Positives
-                probs = model.predict_proba(scaler.transform(features))[0]
-                best_class_idx = np.argmax(probs)
-                confidence = probs[best_class_idx]
-                
-                # Check confidence threshold
-                if confidence >= threshold:
-                    detections.append({
-                        'x': x, 'y': y, 
-                        'class': best_class_idx + 1, 
-                        'conf': confidence
-                    })
+    status_text = st.empty()
     
+    # Calculate total steps for the progress bar
+    x_steps = range(0, w - roi_w, stride)
+    y_steps = range(0, h - roi_h, stride)
+    total_steps = len(x_steps) * len(y_steps)
+    current_step = 0
+
+    for y in y_steps:
+        for x in x_steps:
+            current_step += 1
+            progress_bar.progress(current_step / total_steps)
+            status_text.text(f"Analyzing scan area... {int((current_step/total_steps)*100)}%")
+            
+            # Extract ROI
+            roi = full_img.crop((x, y, x + roi_w, y + roi_h))
+            features = preprocess_roi(roi)
+            
+            # Predict
+            features_scaled = scaler.transform(features)
+            probs = model.predict_proba(features_scaled)[0]
+            best_class = np.argmax(probs)
+            confidence = probs[best_class]
+            
+            # Only record if it's not "background" (High confidence filter)
+            if confidence >= threshold:
+                detections.append({
+                    'box': [x, y, roi_w, roi_h],
+                    'class': best_class + 1,
+                    'conf': confidence
+                })
+                
     progress_bar.empty()
     status_text.empty()
     return detections
 
-# --- 3. UI LAYOUT ---
-st.set_page_config(page_title="GPR-X Precision", layout="wide")
-st.title("📡 GPR-X Precise Auto-Detection")
+# --- 4. STREAMLIT UI ---
+st.set_page_config(page_title="GPR-X Multiclass Detector", layout="wide")
+st.title("📡 GPR-X Intelligent Multi-Target Detector")
+st.write("Upload a radargram to identify Cavities, Bricks, and Metal Pipes.")
 
-uploaded_file = st.sidebar.file_uploader("Upload Radargram Image", type=["jpg", "png", "jpeg"])
-# Slider to control how strict the AI is
-conf_limit = st.sidebar.slider("Confidence Threshold", 0.50, 0.99, 0.90)
+uploaded_file = st.sidebar.file_uploader("Upload PNG/JPG Radargram", type=["png", "jpg", "jpeg"])
+conf_threshold = st.sidebar.slider("Detection Confidence", 0.70, 0.99, 0.92)
 
 if uploaded_file and model:
-    # Prepare image
-    img = Image.open(uploaded_file).convert('L')
-    img_np = np.array(img).astype(np.float64)
-    display_img = mat2gray(img_np)
-
-    if st.sidebar.button("🚀 Start Precision Scan"):
+    input_img = Image.open(uploaded_file).convert('RGB')
+    
+    if st.sidebar.button("🔍 Run Full Scan"):
         start_time = time.time()
-        found = run_intelligent_scan(img_np, model, scaler, conf_limit)
+        results = run_detection(input_img, conf_threshold)
         duration = time.time() - start_time
         
-        # Display Results
-        fig, ax = plt.subplots(figsize=(12, 8))
-        ax.imshow(display_img, cmap='gray', aspect='auto')
+        # Plotting results
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.imshow(input_img)
         
-        # Style mapping to match your requested output
+        # Styling mapping
+        # 1: Cavity (Blue), 2: Brick (White), 3: Metal Pipe (Cyan)
         styles = {
-            1: ("cavity", "#0000FF"),      # Blue
-            2: ("brick", "#FFFFFF"),       # White
-            3: ("metal_pipe", "#00FFFF")   # Cyan
+            1: ("Cavity", "blue"),
+            2: ("Brick", "white"),
+            3: ("Metal Pipe", "cyan")
         }
-
-        if not found:
-            st.warning("No targets detected. Try lowering the Confidence Threshold.")
-        else:
-            for d in found:
-                name, color = styles[d['class']]
-                # Draw professional bounding box
-                rect = patches.Rectangle((d['x'], d['y']), 120, 100, linewidth=2, edgecolor=color, fill=False)
-                ax.add_patch(rect)
-                # Add label with confidence score
-                ax.text(d['x'], d['y']-5, f"{name} {d['conf']:.2f}", color=color, weight='bold', fontsize=10, 
-                        bbox=dict(facecolor='black', alpha=0.5, edgecolor='none', pad=1))
-
-        # True Crop: Remove axes and white margins
-        plt.axis('off')
-        plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
-        st.pyplot(fig, use_container_width=True)
         
-        st.success(f"Scan finished in {duration:.1f}s. {len(found)} objects identified.")
+        for det in results:
+            label, color = styles[det['class']]
+            x, y, w, h = det['box']
+            
+            rect = patches.Rectangle((x, y), w, h, linewidth=2, edgecolor=color, facecolor='none')
+            ax.add_patch(rect)
+            ax.text(x, y-5, f"{label} {det['conf']:.2f}", color=color, fontweight='bold', fontsize=8,
+                    bbox=dict(facecolor='black', alpha=0.5, edgecolor='none', pad=1))
+        
+        plt.axis('off')
+        st.pyplot(fig)
+        st.success(f"Scan complete in {duration:.1f}s. Identified {len(results)} targets.")
 
 elif not model:
-    st.error("AI Assets (svm_model.pkl / scaler.pkl) not found in directory!")
+    st.error("Missing AI Models! Please upload 'svm_model.pkl' and 'scaler.pkl' to the app directory.")
