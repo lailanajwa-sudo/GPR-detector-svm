@@ -37,20 +37,29 @@ st.set_page_config(page_title="GPR-X Detection SVM", layout="wide")
 st.title("📡 GPR-X Detection (SVM-BEMD)")
 
 if model is None:
-    st.error("⚠️ AI Assets (svm_model.pkl/scaler.pkl) not found in the directory!")
+    st.error("⚠️ AI Assets (svm_model.pkl/scaler.pkl) not found!")
 else:
-    # --- MANUAL SLIDERS ON MAIN PAGE ---
-    st.write("### 🎯 Bounding Box Positioning")
-    c1, c2 = st.columns(2)
-    with c1:
-        h_pos = st.slider("Horizontal Trace (Move Box Left/Right)", 0, 800, 200)
-    with c2:
-        v_pos = st.slider("Vertical Depth (Move Box Up/Down)", 0, 312-40-100, 80)
+    # --- SIDEBAR CONTROLS (LEFT SIDE) ---
+    st.sidebar.header("🎯 Bounding Box Controls")
+    h_pos = st.sidebar.slider("Horizontal Trace (X)", 0, 1000, 200)
+    v_pos = st.sidebar.slider("Vertical Depth (Y)", 0, 312-40-100, 80)
     
-    st.divider()
+    st.sidebar.divider()
+    
+    # Reset button to manually clear everything if needed
+    if st.sidebar.button("🗑️ Clear Current Scan"):
+        st.cache_data.clear()
+        st.rerun()
 
-    # --- 3. DATA LOADING ---
-    files = st.file_uploader("Upload .rad & .rd3 files together", type=["rad", "rd3"], accept_multiple_files=True)
+    # --- 3. DATA LOADING (AUTO-RESETS ON NEW UPLOAD) ---
+    # Streamlit file_uploader automatically clears the previous file 
+    # from memory once a new selection is made.
+    files = st.file_uploader(
+        "Upload .rad & .rd3 files", 
+        type=["rad", "rd3"], 
+        accept_multiple_files=True,
+        key="gpr_uploader" # Unique key ensures state management
+    )
 
     if len(files) == 2:
         try:
@@ -65,34 +74,30 @@ else:
             matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
             full_img = mat2gray_python(matrix_clean)
 
-            # --- 4. PREVIEW & ROI EXTRACTION ---
+            # --- 4. PREVIEW & ANALYSIS ---
             col_img, col_res = st.columns([2, 1])
 
             with col_img:
                 fig, ax = plt.subplots(figsize=(10, 5))
                 ax.imshow(full_img, cmap='gray', aspect='auto')
-                # Green box logic using the sliders
+                # Green box moves with sidebar sliders
                 rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
                 ax.add_patch(rect)
                 plt.axis('off')
                 st.pyplot(fig)
 
             # --- 5. CLASSIFICATION ---
-            # Crop using slider values
             roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
             
-            # Only process if ROI is valid size
             if roi_raw.shape[0] >= 10 and roi_raw.shape[1] >= 10:
                 roi_ready = matlab_resize_manual(roi_raw, (100, 120))
                 energy = np.std(roi_ready)
                 
-                # Phase Polarity Check
                 apex_idx = np.argmax(np.std(roi_ready, axis=0))
                 waveform = roi_ready[:, apex_idx]
                 first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
                 is_cavity_phase = first_peak <= 0.50 
 
-                # Classify based on your logic
                 if energy < 0.0135: 
                     res, color = "NO TARGET (SOIL) ⚪", "#484f58"
                 elif energy > 0.026:
@@ -115,10 +120,13 @@ else:
                     
                     # BEMD Visualization
                     imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                    st.image(mat2gray_python(imf1), caption="BEMD Feature Extract", use_container_width=True)
+                    st.image(mat2gray_python(imf1), caption="BEMD Texture Extract", use_container_width=True)
             else:
                 with col_res:
                     st.warning("Adjust sliders to keep the box inside the image.")
                     
         except Exception as e:
             st.error(f"Error processing files: {e}")
+    
+    elif len(files) > 0 and len(files) != 2:
+        st.info("Please upload BOTH the .rad and .rd3 files for the scan.")
