@@ -33,10 +33,10 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     return img[np.ix_(rowIndex, colIndex)]
 
 # --- 2. UI CONFIGURATION ---
-st.set_page_config(page_title="GPR-X Detection", layout="wide")
-st.title("📡 GPR-X Detection (SVM-BEMD)")
+st.set_page_config(page_title="GPR-X Real-Time", layout="wide")
+st.title("📡 GPR-X Real-Time Detector")
 
-# Logic for Clear Files Button
+# File Reset Logic
 if 'uploader_key' not in st.session_state:
     st.session_state['uploader_key'] = 0
 
@@ -47,77 +47,70 @@ def clear_files():
 if model is None:
     st.error("⚠️ AI Assets Missing!")
 else:
-    # --- 3. FILE UPLOADER ---
-    files = st.file_uploader(
-        "Upload .rad & .rd3 files", 
-        type=["rad", "rd3"], 
-        accept_multiple_files=True,
-        key=f"uploader_{st.session_state['uploader_key']}"
-    )
+    files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], 
+                             accept_multiple_files=True, 
+                             key=f"u_{st.session_state['uploader_key']}")
 
-    # Show "Add New Scan" button only if files exist
     if files:
-        if st.button("➕ SCAN NEW FILE (CLEAR CURRENT)", type="primary"):
-            clear_files()
+        st.button("➕ NEW SCAN", on_click=clear_files)
 
     if len(files) == 2:
         try:
             rd3_f = next(f for f in files if f.name.endswith('.rd3'))
             raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
             matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
+            full_img = mat2gray_python(matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True))
+
+            # --- 3. LAYOUT ---
+            col_left, col_right = st.columns([2, 1])
+
+            with col_left:
+                # 1. The Image Preview (Top)
+                st.subheader("Live Preview")
+                plot_placeholder = st.empty()
+                
+                # 2. The Small Sliders (Bottom)
+                st.write("🔍 **Position Tuning**")
+                # Creating 4 columns to make sliders "smaller" (using center columns)
+                _, s1, s2, _ = st.columns([0.1, 1, 1, 0.1])
+                with s1:
+                    h_pos = st.slider("Trace (X)", 0, full_img.shape[1]-120, int(full_img.shape[1]/2), label_visibility="collapsed")
+                    st.caption("Horizontal (X)")
+                with s2:
+                    v_pos = st.slider("Depth (Y)", 0, full_img.shape[0]-100, 80, label_visibility="collapsed")
+                    st.caption("Vertical (Y)")
+
+                # Render Plot
+                fig, ax = plt.subplots(figsize=(10, 4))
+                ax.imshow(full_img, cmap='gray', aspect='auto')
+                rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
+                ax.add_patch(rect)
+                plt.axis('off')
+                plot_placeholder.pyplot(fig)
+
+            # --- 4. CLASSIFICATION (Auto-updates with sliders) ---
+            roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
+            roi_ready = matlab_resize_manual(roi_raw, (100, 120))
+            energy = np.std(roi_ready)
             
-            processed_data = matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True)
-            full_img = mat2gray_python(processed_data)
+            # Polarity Logic
+            apex_idx = np.argmax(np.std(roi_ready, axis=0))
+            waveform = roi_ready[:, apex_idx]
+            first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
+            is_cavity_phase = first_peak <= 0.50 
 
-            # --- 4. THE NO-REFRESH FORM ---
-            # Using st.form prevents the app from refreshing while you move the sliders
-            with st.form("control_panel"):
-                st.write("### 🕹️ Manual Bounding Box Positioning")
-                h_pos = st.slider("Horizontal (Trace)", 0, full_img.shape[1]-120, int(full_img.shape[1]/2))
-                v_pos = st.slider("Vertical (Depth)", 0, full_img.shape[0]-100, 80)
+            if energy < 0.0135: res, color = "SOIL ⚪", "#484f58"
+            elif energy > 0.026: res, color = "METAL ⚙️", "#da3633"
+            else: res, color = ("CAVITY ✅", "#238636") if is_cavity_phase else ("BRICK 🧱", "#d29922")
+
+            with col_right:
+                st.subheader("Live Result")
+                st.markdown(f'<div style="padding:15px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:22px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
+                st.metric("Energy", f"{energy:.4f}")
                 
-                # Users must click this to see the change
-                submitted = st.form_submit_button("✅ APPLY POSITION & SCAN")
-
-            # --- 5. PREVIEW & SCAN RESULT ---
-            # Show the scan if it's the first run or if they clicked the button
-            if submitted or 'initialized' not in st.session_state:
-                st.session_state['initialized'] = True
-                
-                col_img, col_res = st.columns([2, 1])
-
-                with col_img:
-                    st.subheader("Radargram Preview")
-                    fig, ax = plt.subplots(figsize=(10, 5))
-                    ax.imshow(full_img, cmap='gray', aspect='auto')
-                    rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
-                    ax.add_patch(rect)
-                    plt.axis('off')
-                    st.pyplot(fig)
-
-                # Classification
-                roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
-                roi_ready = matlab_resize_manual(roi_raw, (100, 120))
-                energy = np.std(roi_ready)
-                
-                apex_idx = np.argmax(np.std(roi_ready, axis=0))
-                waveform = roi_ready[:, apex_idx]
-                first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
-                is_cavity_phase = first_peak <= 0.50 
-
-                if energy < 0.0135: 
-                    res, color = "NO TARGET ⚪", "#484f58"
-                elif energy > 0.026: 
-                    res, color = "METAL PIPE ⚙️", "#da3633"
-                else: 
-                    res, color = ("CAVITY ✅", "#238636") if is_cavity_phase else ("BRICK 🧱", "#d29922")
-
-                with col_res:
-                    st.subheader("Detection Result")
-                    st.markdown(f'''<div style="padding:20px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:24px; font-weight:bold;">{res}</div>''', unsafe_allow_html=True)
-                    st.metric("Energy Score", f"{energy:.4f}")
-                    imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                    st.image(mat2gray_python(imf1), caption="BEMD Feature Extract", use_container_width=True)
+                # BEMD Feature Extract
+                imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
+                st.image(mat2gray_python(imf1), caption="BEMD Texture", use_container_width=True)
 
         except Exception as e:
             st.error(f"Error: {e}")
