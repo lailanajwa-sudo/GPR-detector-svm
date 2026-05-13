@@ -31,70 +31,72 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. UI CONFIGURATION ---
+# --- 2. SESSION STATE FOR FILE RESET ---
+# This part handles the "Clear Current Files" logic
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
+
+def clear_files():
+    st.session_state.uploader_key += 1 # Changing the key forces the uploader to reset
+
+# --- 3. UI CONFIGURATION ---
 st.set_page_config(page_title="GPR-X Detection SVM", layout="wide")
 st.title("📡 GPR-X Detection (SVM-BEMD)")
 
 if model is None:
     st.error("⚠️ AI Assets Missing!")
 else:
-    # --- LEFT SIDEBAR (SLIDERS) ---
+    # --- LEFT SIDEBAR (MANUAL SLIDERS) ---
     with st.sidebar:
         st.header("🎯 Target Selection")
-        # These are always visible on the left
+        # SLIDERS ARE HERE
         h_pos = st.slider("Horizontal Trace (X)", 0, 1000, 200)
         v_pos = st.slider("Vertical Depth (Y)", 0, 312-40-100, 80)
         
         st.divider()
-        if st.button("🔄 Reset App & Clear Files", use_container_width=True):
+        # BUTTON TO UPLOAD NEW FILES
+        if st.button("🆕 Upload New Scan", use_container_width=True, type="primary"):
+            clear_files()
             st.rerun()
 
-    # --- 3. FILE UPLOADER WITH AUTO-REPLACE LOGIC ---
-    # We use a session state key to track the "current" scan
+    # --- 4. FILE UPLOADER ---
+    # The 'key' changes when you click the button, clearing the files automatically
     uploaded_files = st.file_uploader(
-        "Upload .rad & .rd3 files (Upload new ones to replace the old ones)", 
+        "Upload .rad & .rd3 files", 
         type=["rad", "rd3"], 
-        accept_multiple_files=True
+        accept_multiple_files=True,
+        key=f"gpr_uploader_{st.session_state.uploader_key}"
     )
 
-    # Logic to ensure only the LATEST two files are used
-    if len(uploaded_files) > 2:
-        st.warning("Multiple scans detected. Using only the 2 most recently uploaded files.")
-        # We take the last two files uploaded
-        active_files = uploaded_files[-2:]
-    else:
-        active_files = uploaded_files
-
-    if len(active_files) == 2:
+    if len(uploaded_files) == 2:
         try:
-            # Check if we have one of each required type
-            rd3_f = next((f for f in active_files if f.name.endswith('.rd3')), None)
-            rad_f = next((f for f in active_files if f.name.endswith('.rad')), None)
+            rd3_f = next((f for f in uploaded_files if f.name.endswith('.rd3')), None)
+            rad_f = next((f for f in uploaded_files if f.name.endswith('.rad')), None)
 
             if not rd3_f or not rad_f:
-                st.error("Please upload one .rd3 and one .rad file.")
+                st.error("Please upload exactly one .rd3 and one .rad file.")
             else:
                 raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
                 matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
                 
-                # Remove top 40 (Air-Soil interface)
+                # Pre-processing
                 matrix_cropped = matrix[40:, :] 
                 matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
                 full_img = mat2gray_python(matrix_clean)
 
-                # --- 4. DISPLAY & ANALYSIS ---
+                # --- 5. DISPLAY & ANALYSIS ---
                 col_img, col_res = st.columns([2, 1])
 
                 with col_img:
                     fig, ax = plt.subplots(figsize=(10, 5))
                     ax.imshow(full_img, cmap='gray', aspect='auto')
-                    # This box moves when you move the left sliders
+                    # Bounding box using the sidebar sliders
                     rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
                     ax.add_patch(rect)
                     plt.axis('off')
                     st.pyplot(fig)
 
-                # --- 5. CLASSIFICATION ---
+                # --- 6. CLASSIFICATION ---
                 roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
                 
                 if roi_raw.shape[0] >= 10 and roi_raw.shape[1] >= 10:
@@ -122,7 +124,10 @@ else:
                         st.metric("Energy Score", f"{energy:.4f}")
                         
                         imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                        st.image(mat2gray_python(imf1), caption="BEMD Filtered View", use_container_width=True)
+                        st.image(mat2gray_python(imf1), caption="BEMD View", use_container_width=True)
                 
         except Exception as e:
             st.error(f"Error: {e}")
+    
+    elif len(uploaded_files) > 0:
+        st.info("Waiting for both .rad and .rd3 files...")
