@@ -5,7 +5,7 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.signal import detrend
-from skimage import exposure
+# Removed: from skimage import exposure (This was causing the error)
 
 # --- 1. ASSET LOADING ---
 @st.cache_resource
@@ -15,7 +15,8 @@ def load_assets():
         model = joblib.load(os.path.join(base_path, 'svm_model.pkl'))
         scaler = joblib.load(os.path.join(base_path, 'scaler.pkl'))
         return model, scaler
-    except: return None, None
+    except: 
+        return None, None
 
 model, scaler = load_assets()
 
@@ -37,9 +38,9 @@ st.set_page_config(page_title="GPR-X Detection SVM", layout="wide")
 st.title("📡 GPR-X Detection (SVM-BEMD)")
 
 if model is None:
-    st.error("Missing AI Assets!")
+    st.error("Missing AI Assets! Ensure svm_model.pkl and scaler.pkl are in the same folder.")
 else:
-    # Adjusted slider ranges because the image is now shorter
+    # Sidebar Sliders
     v_pos = st.sidebar.slider("Depth (Adjusted)", 0, 312-40-100, 80)
     h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
     
@@ -51,7 +52,7 @@ else:
         matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
         
         # --- SMART CROP ---
-        # We cut the first 40 pixels (Direct Coupling/Air-Soil Interface)
+        # Cutting first 40 pixels (Direct Coupling removal)
         matrix_cropped = matrix[40:, :] 
         
         matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
@@ -67,7 +68,6 @@ else:
         is_cavity_phase = first_peak <= 0.50 
 
         # --- 4. CLASSIFICATION ---
-        # With the crop, the noise floor is much cleaner
         if energy < 0.0135: 
             res, color = "NO TARGET (SOIL) ⚪", "#484f58"
         elif energy > 0.026:
@@ -92,5 +92,6 @@ else:
             st.metric("Cleaned Energy Score", f"{energy:.4f}")
             st.write("Interface Noise Removed: **Yes**")
             
+            # Feature visualization using detrending
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
             st.image(mat2gray_python(imf1), caption="12,000 BEMD Filtered Features")
