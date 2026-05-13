@@ -2,10 +2,9 @@ import streamlit as st
 import numpy as np
 import joblib
 import os
-from scipy.signal import detrend
 import matplotlib.pyplot as plt
-from PIL import Image
-import io
+import matplotlib.patches as patches
+from scipy.signal import detrend
 
 # --- 1. ASSET LOADING ---
 @st.cache_resource
@@ -19,87 +18,100 @@ def load_assets():
 
 model, scaler = load_assets()
 
-# --- 2. FAST PROCESSING ---
-def get_clean_img(file_content):
-    raw = np.frombuffer(file_content, dtype=np.int16).astype(np.float64)
-    matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
-    matrix_clean = matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True)
-    img = (matrix_clean - np.min(matrix_clean)) / (np.max(matrix_clean) - np.min(matrix_clean))
-    return img
+def mat2gray_python(img):
+    mn, mx = np.min(img), np.max(img)
+    diff = mx - mn
+    return (img - mn) / diff if diff > 1e-7 else np.zeros_like(img)
 
-# --- 3. UI SETUP ---
-st.set_page_config(page_title="GPR-X Smooth", layout="wide")
+def matlab_resize_manual(img, new_shape=(100, 120)):
+    old_h, old_w = img.shape
+    new_h, new_w = new_shape
+    scale_y, scale_x = new_h / old_h, new_w / old_w
+    rowIndex = np.minimum(np.round(((np.arange(1, new_h + 1)) - 0.5) / scale_y + 0.5).astype(int), old_h) - 1
+    colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
+    return img[np.ix_(rowIndex, colIndex)]
 
-if 'reset_key' not in st.session_state:
-    st.session_state.reset_key = 0
+# --- 2. UI CONFIGURATION ---
+st.set_page_config(page_title="GPR-X Scanner", layout="wide")
+st.title("📡 GPR-X Real-Time Scanner")
+
+# Reset Function
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0
+
+def clear_files():
+    st.session_state.uploader_key += 1
+    st.rerun()
 
 if model is None:
-    st.error("Assets missing!")
+    st.error("⚠️ Fail model/scaler tak jumpa! Letak fail pkl dalam folder yang sama.")
 else:
-    # Kawasan Muat Naik
+    # Uploader
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], 
                              accept_multiple_files=True, 
-                             key=f"u_{st.session_state.reset_key}")
+                             key=f"u_{st.session_state.uploader_key}")
 
-    # Tombol Reset (Hanya muncul bila ada fail)
     if files:
-        if st.button("🗑️ CLEAR & NEW SCAN", type="primary"):
-            st.session_state.reset_key += 1
-            st.rerun()
+        if st.button("🗑️ CLEAR & NEW SCAN"):
+            clear_files()
 
     if len(files) == 2:
-        rd3_f = next(f for f in files if f.name.endswith('.rd3'))
-        full_img = get_clean_img(rd3_f.getvalue())
+        try:
+            rd3_f = next(f for f in files if f.name.endswith('.rd3'))
+            raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
+            matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
+            full_img = mat2gray_python(matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True))
 
-        # --- 4. THE SMOOTH UI ---
-        col_view, col_side = st.columns([2, 1])
+            # --- 3. DISPLAY & SLIDERS (KECIL KAT BAWAH) ---
+            col_left, col_right = st.columns([2, 1])
 
-        with col_view:
-            st.subheader("Live Scanner")
-            
-            # Kita guna CSS untuk letak kotak hijau atas gambar
-            # Ini takkan refresh gambar, cuma gerakkan 'overlay' sahaja
-            h_pos = st.slider("Horizontal (Trace)", 0, full_img.shape[1]-120, int(full_img.shape[1]/2))
-            v_pos = st.slider("Vertical (Depth)", 0, full_img.shape[0]-100, 80)
+            with col_left:
+                st.subheader("Radargram View")
+                # Lubang untuk gambar (biar dia tak refresh satu page)
+                plot_spot = st.empty()
+                
+                st.write("---")
+                st.write("🕹️ **Position Controls**")
+                # Buat slider jadi kecik side-by-side
+                c1, c2 = st.columns(2)
+                with c1:
+                    h_pos = st.slider("Trace (X)", 0, full_img.shape[1]-120, int(full_img.shape[1]/2))
+                with c2:
+                    v_pos = st.slider("Depth (Y)", 0, full_img.shape[0]-100, 80)
 
-            # Convert numpy ke Image untuk display laju
-            img_pil = Image.fromarray((full_img * 255).astype(np.uint8))
-            
-            # Guna HTML/CSS untuk buat box
-            # Cara ni jauh lebih smooth daripada Matplotlib
-            st.markdown(
-                f"""
-                <div style="position: relative; width: 100%; border: 1px solid #444;">
-                    <img src="data:image/png;base64,{st.image(img_pil, use_container_width=True)}" style="width: 100%; display: block;">
-                    <div style="
-                        position: absolute;
-                        border: 3px solid #00ff00;
-                        left: {h_pos / full_img.shape[1] * 100}%;
-                        top: {v_pos / full_img.shape[0] * 100}%;
-                        width: {(120 / full_img.shape[1]) * 100}%;
-                        height: {(100 / full_img.shape[0]) * 100}%;
-                        pointer-events: none;
-                        box-shadow: 0 0 10px #00ff00;
-                    "></div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+                # Render Plot (Cara standard tapi dioptimumkan)
+                fig, ax = plt.subplots(figsize=(10, 4))
+                ax.imshow(full_img, cmap='gray', aspect='auto')
+                # Box Hijau
+                rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
+                ax.add_patch(rect)
+                plt.axis('off')
+                plot_spot.pyplot(fig)
+                plt.close(fig) # Clear memory
 
-        # --- 5. RESULT ---
-        with col_side:
-            st.subheader("Analysis")
+            # --- 4. CLASSIFICATION ---
             roi = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
-            energy = np.std(roi)
+            roi_ready = matlab_resize_manual(roi, (100, 120))
+            energy = np.std(roi_ready)
             
-            # Result box
+            # Polarity/Phase logic
+            apex_idx = np.argmax(np.std(roi_ready, axis=0))
+            waveform = roi_ready[:, apex_idx]
+            first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
+            is_cavity = first_peak <= 0.50 
+
             if energy < 0.0135: res, color = "SOIL ⚪", "#484f58"
             elif energy > 0.026: res, color = "METAL ⚙️", "#da3633"
-            else: res, color = "TARGET ✅", "#238636"
+            else: res, color = ("CAVITY ✅", "#238636") if is_cavity else ("BRICK 🧱", "#d29922")
 
-            st.markdown(f'<div style="padding:20px; background:{color}; color:white; border-radius:10px; text-align:center; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Energy", f"{energy:.4f}")
-            
-            # Small BEMD Preview
-            roi_imf = detrend(detrend(roi, axis=0), axis=1)
-            st.image((roi_imf - np.min(roi_imf))/(np.max(roi_imf)-np.min(roi_imf)), caption="Feature View", use_container_width=True)
+            with col_right:
+                st.subheader("Scan Result")
+                st.markdown(f'<div style="padding:15px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:22px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
+                st.metric("Energy Score", f"{energy:.4f}")
+                
+                # BEMD View
+                imf = detrend(detrend(roi_ready, axis=0), axis=1)
+                st.image(mat2gray_python(imf), caption="BEMD View", use_container_width=True)
+
+        except Exception as e:
+            st.error(f"Error: {e}")
