@@ -35,26 +35,24 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 st.set_page_config(page_title="GPR-X Detection", layout="wide")
 st.title("📡 GPR-X Real-Time Scanner")
 
-# Reset Function Logic
-if 'uploader_key' not in st.session_state:
-    st.session_state.uploader_key = 0
-
-def refresh_page():
-    st.session_state.uploader_key += 1
-    st.rerun()
+# Guna session state untuk simpan kunci uploader
+if 'uploader_id' not in st.session_state:
+    st.session_state.uploader_id = 0
 
 if model is None:
     st.error("⚠️ Fail model/scaler tidak dijumpai!")
 else:
     # --- 3. UPLOAD AREA ---
-    # Uploader ni duduk luar fragment supaya dia tak kacau bila slide bergerak
+    # Uploader duduk di luar fragment
     files = st.file_uploader("Upload .rad & .rd3 files", type=["rad", "rd3"], 
                              accept_multiple_files=True, 
-                             key=f"u_{st.session_state.uploader_key}")
+                             key=f"u_{st.session_state.uploader_id}")
 
-    # Isu 1: Butang muncul HANYA selepas upload
+    # FIX: Panggil rerun di luar callback
     if files:
-        st.button("🗑️ UPLOAD NEW FILES", on_click=refresh_page, type="primary")
+        if st.button("🗑️ UPLOAD NEW FILES", type="primary"):
+            st.session_state.uploader_id += 1
+            st.rerun() # Sekarang rerun akan berfungsi 
         st.divider()
 
     if len(files) == 2:
@@ -63,25 +61,26 @@ else:
             raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
             matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
             
-            # Processing (Clipped top 40)
+            # Processing
             matrix_clean = matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True)
             full_img = mat2gray_python(matrix_clean)
 
-            # --- 4. SCANNER AREA (Guna st.fragment untuk elak refresh satu page) ---
+            # --- 4. SCANNER AREA (Guna fragment untuk elak refresh satu page) ---
             @st.fragment
             def run_scanner(img_data):
                 col_main, col_res = st.columns([2, 1])
 
                 with col_main:
                     st.subheader("Radargram Preview")
-                    # Placeholder untuk gambar
                     img_holder = st.empty()
                     
                     st.write("🕹️ **Manual Slider Controls**")
                     c1, c2 = st.columns(2)
                     with c1:
+                        # Slider Horizontal (Trace)
                         h_pos = st.slider("Trace (X-Axis)", 0, img_data.shape[1]-120, int(img_data.shape[1]/2))
                     with c2:
+                        # Slider Vertical (Depth)
                         v_pos = st.slider("Depth (Y-Axis)", 0, img_data.shape[0]-100, 80)
 
                     # Lukis plot
@@ -99,7 +98,6 @@ else:
                     roi_ready = matlab_resize_manual(roi, (100, 120))
                     energy = np.std(roi_ready)
                     
-                    # Logic SVM Prediction
                     apex_idx = np.argmax(np.std(roi_ready, axis=0))
                     waveform = roi_ready[:, apex_idx]
                     first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
@@ -113,11 +111,9 @@ else:
                     st.markdown(f'<div style="padding:15px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:22px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
                     st.metric("Energy", f"{energy:.4f}")
                     
-                    # Small BEMD Feature Extract
                     imf = detrend(detrend(roi_ready, axis=0), axis=1)
                     st.image(mat2gray_python(imf), caption="BEMD Filtered View", use_container_width=True)
 
-            # Panggil fungsi scanner
             run_scanner(full_img)
 
         except Exception as e:
