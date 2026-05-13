@@ -31,7 +31,7 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. UI SETTINGS ---
+# --- 2. UI CONFIGURATION ---
 st.set_page_config(page_title="GPR-X Detection", layout="wide")
 st.title("📡 GPR-X Real-Time Scanner")
 
@@ -44,17 +44,18 @@ def refresh_page():
     st.rerun()
 
 if model is None:
-    st.error("⚠️ Fail model/scaler tidak dijumpai dalam folder!")
+    st.error("⚠️ Fail model/scaler tidak dijumpai!")
 else:
-    # --- 3. UPLOAD & REFRESH ---
-    col_up1, col_up2 = st.columns([4, 1])
-    with col_up1:
-        files = st.file_uploader("Muat naik .rad & .rd3", type=["rad", "rd3"], 
-                                 accept_multiple_files=True, 
-                                 key=f"u_{st.session_state.uploader_key}")
-    with col_up2:
-        st.write(" ") # Padding
-        st.button("🗑️ SCAN BARU", on_click=refresh_page, use_container_width=True)
+    # --- 3. UPLOAD AREA ---
+    # Uploader ni duduk luar fragment supaya dia tak kacau bila slide bergerak
+    files = st.file_uploader("Upload .rad & .rd3 files", type=["rad", "rd3"], 
+                             accept_multiple_files=True, 
+                             key=f"u_{st.session_state.uploader_key}")
+
+    # Isu 1: Butang muncul HANYA selepas upload
+    if files:
+        st.button("🗑️ UPLOAD NEW FILES", on_click=refresh_page, type="primary")
+        st.divider()
 
     if len(files) == 2:
         try:
@@ -62,58 +63,62 @@ else:
             raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
             matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
             
-            # Preprocessing
-            matrix_cropped = matrix[40:, :] 
-            matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
+            # Processing (Clipped top 40)
+            matrix_clean = matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True)
             full_img = mat2gray_python(matrix_clean)
 
-            # --- 4. LAYOUT: PREVIEW & RESULT ---
-            col_main, col_res = st.columns([2, 1])
+            # --- 4. SCANNER AREA (Guna st.fragment untuk elak refresh satu page) ---
+            @st.fragment
+            def run_scanner(img_data):
+                col_main, col_res = st.columns([2, 1])
 
-            with col_main:
-                st.subheader("Radargram Preview")
-                # Placeholder untuk elakkan gambar "flicker"
-                image_placeholder = st.empty()
-                
-                # --- SLIDER DI BAWAH GAMBAR ---
-                st.write("🕹️ **Manual Bounding Box Control**")
-                sl1, sl2 = st.columns(2)
-                with sl1:
-                    h_pos = st.slider("Trace (Horizontal)", 0, full_img.shape[1]-120, int(full_img.shape[1]/2))
-                with sl2:
-                    v_pos = st.slider("Depth (Vertical)", 0, full_img.shape[0]-100, 80)
+                with col_main:
+                    st.subheader("Radargram Preview")
+                    # Placeholder untuk gambar
+                    img_holder = st.empty()
+                    
+                    st.write("🕹️ **Manual Slider Controls**")
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        h_pos = st.slider("Trace (X-Axis)", 0, img_data.shape[1]-120, int(img_data.shape[1]/2))
+                    with c2:
+                        v_pos = st.slider("Depth (Y-Axis)", 0, img_data.shape[0]-100, 80)
 
-                # Lukis Plot
-                fig, ax = plt.subplots(figsize=(10, 4))
-                ax.imshow(full_img, cmap='gray', aspect='auto')
-                rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
-                ax.add_patch(rect)
-                plt.axis('off')
-                image_placeholder.pyplot(fig)
-                plt.close(fig)
+                    # Lukis plot
+                    fig, ax = plt.subplots(figsize=(10, 4))
+                    ax.imshow(img_data, cmap='gray', aspect='auto')
+                    rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
+                    ax.add_patch(rect)
+                    plt.axis('off')
+                    img_holder.pyplot(fig)
+                    plt.close(fig)
 
-            # --- 5. ANALISIS ---
-            roi = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
-            roi_ready = matlab_resize_manual(roi, (100, 120))
-            energy = np.std(roi_ready)
-            
-            apex_idx = np.argmax(np.std(roi_ready, axis=0))
-            waveform = roi_ready[:, apex_idx]
-            first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
-            is_cavity = first_peak <= 0.50 
+                # --- 5. RESULT AREA ---
+                with col_res:
+                    roi = img_data[v_pos:v_pos+100, h_pos:h_pos+120]
+                    roi_ready = matlab_resize_manual(roi, (100, 120))
+                    energy = np.std(roi_ready)
+                    
+                    # Logic SVM Prediction
+                    apex_idx = np.argmax(np.std(roi_ready, axis=0))
+                    waveform = roi_ready[:, apex_idx]
+                    first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
+                    is_cavity = first_peak <= 0.50 
 
-            if energy < 0.0135: res, color = "SOIL ⚪", "#484f58"
-            elif energy > 0.026: res, color = "METAL ⚙️", "#da3633"
-            else: res, color = ("CAVITY ✅", "#238636") if is_cavity else ("BRICK 🧱", "#d29922")
+                    if energy < 0.0135: res, color = "SOIL ⚪", "#484f58"
+                    elif energy > 0.026: res, color = "METAL ⚙️", "#da3633"
+                    else: res, color = ("CAVITY ✅", "#238636") if is_cavity else ("BRICK 🧱", "#d29922")
 
-            with col_res:
-                st.subheader("Live Analysis")
-                st.markdown(f'<div style="padding:20px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:24px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-                st.metric("Signal Energy", f"{energy:.4f}")
-                
-                # BEMD Preview
-                imf = detrend(detrend(roi_ready, axis=0), axis=1)
-                st.image(mat2gray_python(imf), caption="BEMD Filtered View", use_container_width=True)
+                    st.subheader("Live Result")
+                    st.markdown(f'<div style="padding:15px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:22px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
+                    st.metric("Energy", f"{energy:.4f}")
+                    
+                    # Small BEMD Feature Extract
+                    imf = detrend(detrend(roi_ready, axis=0), axis=1)
+                    st.image(mat2gray_python(imf), caption="BEMD Filtered View", use_container_width=True)
+
+            # Panggil fungsi scanner
+            run_scanner(full_img)
 
         except Exception as e:
-            st.error(f"Ralat: {e}")
+            st.error(f"Error: {e}")
