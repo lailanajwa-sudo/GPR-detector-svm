@@ -11,10 +11,11 @@ from scipy.signal import detrend
 def load_assets():
     base_path = os.path.dirname(__file__)
     try:
+        # These must be in the same folder as app.py
         model = joblib.load(os.path.join(base_path, 'svm_model.pkl'))
         scaler = joblib.load(os.path.join(base_path, 'scaler.pkl'))
         return model, scaler
-    except: 
+    except Exception as e:
         return None, None
 
 model, scaler = load_assets()
@@ -32,22 +33,24 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. UI & SIDEBAR SLIDERS ---
+# --- 2. UI & SIDEBAR (LEFT SIDE) ---
 st.set_page_config(page_title="GPR-X Detection SVM", layout="wide")
 
-# --- LEFT SIDEBAR ---
+# This forces the sidebar to be open and creates the sliders
 with st.sidebar:
-    st.header("🎮 Manual Controls")
+    st.header("🎮 Manual Positioning")
+    st.write("Use these to move the green box:")
     
-    # These are your manual sliders for positioning the bounding box
-    h_pos = st.slider("Horizontal Trace (X)", 0, 1000, 200, help="Move the box left and right")
-    v_pos = st.slider("Vertical Depth (Y)", 0, 312-40-100, 80, help="Move the box up and down")
+    # MANUAL SLIDERS
+    h_pos = st.slider("Horizontal Trace (X)", 0, 1000, 200)
+    v_pos = st.slider("Vertical Depth (Y)", 0, 312-40-100, 80)
     
     st.divider()
     
-    # BUTTON TO CLEAR CURRENT FILES
-    if st.button("🔄 Upload New Scan (Clear Current)", use_container_width=True, type="primary"):
-        # This clears all uploaded files and resets the app state
+    # THE "ADD NEW SCAN" BUTTON
+    st.subheader("Control Panel")
+    if st.button("➕ ADD NEW SCAN / CLEAR FILES", use_container_width=True, type="primary"):
+        # This completely wipes the memory of the previous files
         st.session_state.clear()
         st.cache_data.clear()
         st.rerun()
@@ -55,15 +58,15 @@ with st.sidebar:
 st.title("📡 GPR-X Detection (SVM-BEMD)")
 
 if model is None:
-    st.error("⚠️ AI Assets Missing! Ensure svm_model.pkl and scaler.pkl are in the folder.")
+    st.error("⚠️ AI Assets (svm_model.pkl/scaler.pkl) not found! Check your folder.")
 else:
     # --- 3. FILE UPLOADER ---
-    # The 'key' ensures that clearing session state actually resets this component
+    # We use a key tied to session_state so the button above can clear it
     files = st.file_uploader(
-        "Step 1: Upload .rad & .rd3 files", 
+        "Upload .rad & .rd3 files", 
         type=["rad", "rd3"], 
         accept_multiple_files=True,
-        key="gpr_file_uploader"
+        key="uploader_key"
     )
 
     if len(files) == 2:
@@ -71,23 +74,23 @@ else:
             rd3_f = next(f for f in files if f.name.endswith('.rd3'))
             raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
             
-            # Reshape (312 rows per trace)
+            # Reshape (Standard MALA 312 samples)
             matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
             
-            # Preprocessing
+            # Crop direct coupling (top 40 pixels)
             matrix_cropped = matrix[40:, :] 
             matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
             full_img = mat2gray_python(matrix_clean)
 
-            # --- 4. DISPLAY LAYOUT ---
-            col_main, col_res = st.columns([2, 1])
+            # --- 4. DISPLAY ---
+            col_img, col_res = st.columns([2, 1])
 
-            with col_main:
-                st.subheader("GPR Radargram")
+            with col_img:
+                st.subheader("GPR Radargram Preview")
                 fig, ax = plt.subplots(figsize=(10, 5))
                 ax.imshow(full_img, cmap='gray', aspect='auto')
                 
-                # The green box that moves with the SIDEBAR sliders
+                # The bounding box that reacts to the SIDEBAR sliders
                 rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
                 ax.add_patch(rect)
                 plt.axis('off')
@@ -100,7 +103,7 @@ else:
                 roi_ready = matlab_resize_manual(roi_raw, (100, 120))
                 energy = np.std(roi_ready)
                 
-                # Phase check
+                # Apex/Phase check
                 apex_idx = np.argmax(np.std(roi_ready, axis=0))
                 waveform = roi_ready[:, apex_idx]
                 first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
@@ -117,20 +120,20 @@ else:
                         res, color = "BRICK / CONCRETE 🧱", "#d29922"
 
                 with col_res:
-                    st.subheader("Detection Result")
+                    st.subheader("Analysis")
                     st.markdown(f'''
                         <div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:24px; font-weight:bold;">
                             {res}
                         </div>
                     ''', unsafe_allow_html=True)
                     
-                    st.metric("Signal Energy Score", f"{energy:.4f}")
+                    st.metric("Energy Score", f"{energy:.4f}")
                     
-                    # Feature Extraction View
+                    # BEMD Feature Extract View
                     imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
                     st.image(mat2gray_python(imf1), caption="BEMD Filtered Texture", use_container_width=True)
-                    
+        
         except Exception as e:
             st.error(f"Error: {e}")
     elif len(files) > 0:
-        st.info("Please upload exactly two files (.rad and .rd3) to begin.")
+        st.info("💡 Upload exactly TWO files (.rad + .rd3) to start.")
