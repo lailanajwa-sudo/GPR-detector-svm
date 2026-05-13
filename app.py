@@ -33,7 +33,7 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 
 # --- 2. UI CONFIGURATION ---
 st.set_page_config(page_title="GPR-X Smooth Scan", layout="wide")
-st.title("📡 GPR-X Real-Time Scanner")
+st.title("📡 GPR-X Smooth Scanner")
 
 # Logic to clear files
 if 'reset_key' not in st.session_state:
@@ -46,53 +46,51 @@ def trigger_new_scan():
 if model is None:
     st.error("⚠️ AI Assets Missing!")
 else:
-    # --- 3. FILE UPLOADER ---
+    # --- 3. FILE UPLOADER (Static Area) ---
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], 
                              accept_multiple_files=True, 
                              key=f"uploader_{st.session_state.reset_key}")
 
     if files:
-        if st.button("➕ CLEAR & UPLOAD NEW SCAN", type="primary"):
+        if st.button("➕ SCAN NEW FILE", type="primary"):
             trigger_new_scan()
 
     if len(files) == 2:
-        try:
-            rd3_f = next(f for f in files if f.name.endswith('.rd3'))
-            raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
-            matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
-            full_img = mat2gray_python(matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True))
+        rd3_f = next(f for f in files if f.name.endswith('.rd3'))
+        raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
+        matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
+        full_img = mat2gray_python(matrix[40:, :] - np.mean(matrix[40:, :], axis=1, keepdims=True))
 
-            # --- 4. LAYOUT ---
+        # --- 4. THE FRAGMENT (This stops the page refresh) ---
+        @st.fragment
+        def render_scan_area(img_data):
             col_preview, col_analysis = st.columns([2, 1])
-
+            
             with col_preview:
                 st.subheader("Radargram")
-                # We use a placeholder so the image stays in the same spot
-                image_placeholder = st.empty()
+                # The Placeholder for the image
+                image_spot = st.empty()
                 
-                st.write("---")
-                # Small sliders at the bottom
-                st.write("🕹️ **Manual Position**")
+                st.write("🕹️ **Adjust Bounding Box (Move Slider Below)**")
                 c1, c2 = st.columns(2)
                 with c1:
-                    h_pos = st.slider("X Position", 0, full_img.shape[1]-120, int(full_img.shape[1]/2), key="h_pos")
+                    h_pos = st.slider("X Position", 0, img_data.shape[1]-120, int(img_data.shape[1]/2))
                 with c2:
-                    v_pos = st.slider("Y Position", 0, full_img.shape[0]-100, 80, key="v_pos")
+                    v_pos = st.slider("Y Position", 0, img_data.shape[0]-100, 80)
 
-                # Update the image placeholder
+                # Plot rendering
                 fig, ax = plt.subplots(figsize=(10, 4))
-                ax.imshow(full_img, cmap='gray', aspect='auto')
+                ax.imshow(img_data, cmap='gray', aspect='auto')
                 rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
                 ax.add_patch(rect)
                 plt.axis('off')
-                image_placeholder.pyplot(fig)
+                image_spot.pyplot(fig)
 
             # --- 5. CLASSIFICATION ---
-            roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
+            roi_raw = img_data[v_pos:v_pos+100, h_pos:h_pos+120]
             roi_ready = matlab_resize_manual(roi_raw, (100, 120))
             energy = np.std(roi_ready)
             
-            # Polarity Logic
             apex_idx = np.argmax(np.std(roi_ready, axis=0))
             waveform = roi_ready[:, apex_idx]
             first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
@@ -103,13 +101,11 @@ else:
             else: res, color = ("CAVITY ✅", "#238636") if is_cavity_phase else ("BRICK 🧱", "#d29922")
 
             with col_analysis:
-                st.subheader("Live Scan")
+                st.subheader("Result")
                 st.markdown(f'<div style="padding:15px; border-radius:10px; background-color:{color}; color:white; text-align:center; font-size:22px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-                st.metric("Signal Energy", f"{energy:.4f}")
-                
-                # Show AI Processed Image
+                st.metric("Energy", f"{energy:.4f}")
                 imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-                st.image(mat2gray_python(imf1), caption="BEMD Filtered", use_container_width=True)
+                st.image(mat2gray_python(imf1), caption="BEMD View", use_container_width=True)
 
-        except Exception as e:
-            st.error(f"Error: {e}")
+        # Call the smooth fragment
+        render_scan_area(full_img)
