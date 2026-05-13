@@ -32,81 +32,89 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
     colIndex = np.minimum(np.round(((np.arange(1, new_w + 1)) - 0.5) / scale_x + 0.5).astype(int), old_w) - 1
     return img[np.ix_(rowIndex, colIndex)]
 
-# --- 2. UI ---
+# --- 2. UI CONFIGURATION ---
 st.set_page_config(page_title="GPR-X Detection SVM", layout="wide")
 st.title("📡 GPR-X Detection (SVM-BEMD)")
 
 if model is None:
-    st.error("Missing AI Assets! Ensure svm_model.pkl and scaler.pkl are in the folder.")
+    st.error("⚠️ Missing AI Assets! Ensure svm_model.pkl and scaler.pkl are in the folder.")
 else:
-    # --- MANUAL SLIDERS FOR BOUNDING BOX ---
-    st.sidebar.header("Bounding Box Controls")
+    # --- SIDEBAR CONTROLS ---
+    st.sidebar.header("🎯 Bounding Box Positioning")
     
-    # Trace (Horizontal Position)
-    h_pos = st.sidebar.slider("Horizontal Position (Trace)", 0, 450, 200)
+    # We use sliders to manually move the box
+    # v_pos controls depth (Y), h_pos controls trace (X)
+    v_pos = st.sidebar.slider("Vertical Depth (Y)", 0, 312-40-100, 80)
+    h_pos = st.sidebar.slider("Horizontal Trace (X)", 0, 1000, 200) # Increased range for wider radargrams
     
-    # Depth (Vertical Position)
-    v_pos = st.sidebar.slider("Vertical Position (Depth)", 0, 312, 80)
+    st.sidebar.divider()
+    # The classification button is now at the bottom of the sliders
+    analyze_btn = st.sidebar.button("🚀 START CLASSIFICATION", use_container_width=True, type="primary")
     
-    # Box Width
-    box_width = st.sidebar.slider("Box Width", 20, 200, 120)
-    
-    # Box Height
-    box_height = st.sidebar.slider("Box Height", 20, 200, 100)
-    
+    # --- 3. DATA PROCESSING ---
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
     if len(files) == 2:
         rd3_f = next(f for f in files if f.name.endswith('.rd3'))
         raw = np.frombuffer(rd3_f.read(), dtype=np.int16).astype(np.float64)
+        
+        # Reshape according to GPR traces
         matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
         
-        # --- SMART CROP ---
+        # SMART CROP: Remove direct coupling (top 40 pixels)
         matrix_cropped = matrix[40:, :] 
         matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
-        
-        # Adjusting the extraction to use the manual box dimensions
-        # Added safety checks to prevent indexing out of bounds
-        v_end = min(v_pos + box_height, full_img.shape[0])
-        h_end = min(h_pos + box_width, full_img.shape[1])
-        
-        roi_raw = full_img[v_pos:v_end, h_pos:h_end]
-        
-        # Resize ROI to match the 100x120 input the SVM expects
-        roi_ready = matlab_resize_manual(roi_raw, (100, 120))
-        energy = np.std(roi_ready)
-        
-        # --- 3. PHASE POLARITY ---
-        apex_idx = np.argmax(np.std(roi_ready, axis=0))
-        waveform = roi_ready[:, apex_idx]
-        first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
-        is_cavity_phase = first_peak <= 0.50 
 
-        # --- 4. CLASSIFICATION ---
-        if energy < 0.0135: 
-            res, color = "NO TARGET (SOIL) ⚪", "#484f58"
-        elif energy > 0.026:
-            res, color = "METAL PIPE ⚙️", "#da3633"
-        else:
-            if is_cavity_phase:
-                res, color = "CAVITY (VOID) ✅", "#238636"
-            else:
-                res, color = "BRICK / CONCRETE 🧱", "#d29922"
+        # --- 4. PREVIEW & ANALYSIS ---
+        col_main, col_res = st.columns([2, 1])
 
-        # --- 5. DISPLAY ---
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            fig, ax = plt.subplots()
+        with col_main:
+            st.subheader("Radargram Preview")
+            fig, ax = plt.subplots(figsize=(10, 5))
             ax.imshow(full_img, cmap='gray', aspect='auto')
-            # Updated to show the dynamic box size
-            ax.add_patch(patches.Rectangle((h_pos, v_pos), box_width, box_height, linewidth=2, edgecolor='#00ff00', fill=False))
+            # Green box shows exactly where the SVM is looking
+            rect = patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False)
+            ax.add_patch(rect)
             plt.axis('off')
             st.pyplot(fig)
 
-        with col2:
-            st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
-            st.metric("Cleaned Energy Score", f"{energy:.4f}")
+        # Trigger analysis ONLY when button is clicked
+        if analyze_btn:
+            # Crop the manual ROI
+            # Safety: ensure we don't go out of image bounds
+            roi_raw = full_img[v_pos:v_pos+100, h_pos:h_pos+120]
+            roi_ready = matlab_resize_manual(roi_raw, (100, 120))
             
-            imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
-            st.image(mat2gray_python(imf1), caption="12,000 BEMD Filtered Features")
+            energy = np.std(roi_ready)
+            
+            # --- PHASE POLARITY ---
+            apex_idx = np.argmax(np.std(roi_ready, axis=0))
+            waveform = roi_ready[:, apex_idx]
+            first_peak = waveform[np.argmax(np.abs(waveform - 0.5))]
+            is_cavity_phase = first_peak <= 0.50 
+
+            # --- CLASSIFICATION LOGIC ---
+            if energy < 0.0135: 
+                res, color = "NO TARGET (SOIL) ⚪", "#484f58"
+            elif energy > 0.026:
+                res, color = "METAL PIPE ⚙️", "#da3633"
+            else:
+                if is_cavity_phase:
+                    res, color = "CAVITY (VOID) ✅", "#238636"
+                else:
+                    res, color = "BRICK / CONCRETE 🧱", "#d29922"
+
+            with col_res:
+                st.subheader("Analysis Result")
+                st.markdown(f'''
+                    <div style="padding:30px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:24px; font-weight:bold;">
+                        {res}
+                    </div>
+                ''', unsafe_allow_html=True)
+                
+                st.metric("Signal Energy Score", f"{energy:.4f}")
+                
+                # Show what the AI "sees" after BEMD filter
+                imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
+                st.image(mat2gray_python(imf1), caption="BEMD Filtered Texture", width=300)
