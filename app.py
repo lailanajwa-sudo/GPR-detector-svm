@@ -5,7 +5,6 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy.signal import detrend
-# Removed: from skimage import exposure (This was causing the error)
 
 # --- 1. ASSET LOADING ---
 @st.cache_resource
@@ -38,11 +37,22 @@ st.set_page_config(page_title="GPR-X Detection SVM", layout="wide")
 st.title("📡 GPR-X Detection (SVM-BEMD)")
 
 if model is None:
-    st.error("Missing AI Assets! Ensure svm_model.pkl and scaler.pkl are in the same folder.")
+    st.error("Missing AI Assets! Ensure svm_model.pkl and scaler.pkl are in the folder.")
 else:
-    # Sidebar Sliders
-    v_pos = st.sidebar.slider("Depth (Adjusted)", 0, 312-40-100, 80)
-    h_pos = st.sidebar.slider("Trace", 0, 450-125, 200)
+    # --- MANUAL SLIDERS FOR BOUNDING BOX ---
+    st.sidebar.header("Bounding Box Controls")
+    
+    # Trace (Horizontal Position)
+    h_pos = st.sidebar.slider("Horizontal Position (Trace)", 0, 450, 200)
+    
+    # Depth (Vertical Position)
+    v_pos = st.sidebar.slider("Vertical Position (Depth)", 0, 312, 80)
+    
+    # Box Width
+    box_width = st.sidebar.slider("Box Width", 20, 200, 120)
+    
+    # Box Height
+    box_height = st.sidebar.slider("Box Height", 20, 200, 100)
     
     files = st.file_uploader("Upload .rad & .rd3", type=["rad", "rd3"], accept_multiple_files=True)
 
@@ -52,13 +62,19 @@ else:
         matrix = raw[:312*(len(raw)//312)].reshape((312, -1), order='F')
         
         # --- SMART CROP ---
-        # Cutting first 40 pixels (Direct Coupling removal)
         matrix_cropped = matrix[40:, :] 
-        
         matrix_clean = matrix_cropped - np.mean(matrix_cropped, axis=1, keepdims=True)
         full_img = mat2gray_python(matrix_clean)
         
-        roi_ready = matlab_resize_manual(full_img[v_pos:v_pos+100, h_pos:h_pos+120], (100, 120))
+        # Adjusting the extraction to use the manual box dimensions
+        # Added safety checks to prevent indexing out of bounds
+        v_end = min(v_pos + box_height, full_img.shape[0])
+        h_end = min(h_pos + box_width, full_img.shape[1])
+        
+        roi_raw = full_img[v_pos:v_end, h_pos:h_end]
+        
+        # Resize ROI to match the 100x120 input the SVM expects
+        roi_ready = matlab_resize_manual(roi_raw, (100, 120))
         energy = np.std(roi_ready)
         
         # --- 3. PHASE POLARITY ---
@@ -83,15 +99,14 @@ else:
         with col1:
             fig, ax = plt.subplots()
             ax.imshow(full_img, cmap='gray', aspect='auto')
-            ax.add_patch(patches.Rectangle((h_pos, v_pos), 120, 100, linewidth=2, edgecolor='#00ff00', fill=False))
+            # Updated to show the dynamic box size
+            ax.add_patch(patches.Rectangle((h_pos, v_pos), box_width, box_height, linewidth=2, edgecolor='#00ff00', fill=False))
             plt.axis('off')
             st.pyplot(fig)
 
         with col2:
             st.markdown(f'<div style="padding:25px; border-radius:15px; background-color:{color}; color:white; text-align:center; font-size:28px; font-weight:bold;">{res}</div>', unsafe_allow_html=True)
             st.metric("Cleaned Energy Score", f"{energy:.4f}")
-            st.write("Interface Noise Removed: **Yes**")
             
-            # Feature visualization using detrending
             imf1 = detrend(detrend(roi_ready, axis=0), axis=1)
             st.image(mat2gray_python(imf1), caption="12,000 BEMD Filtered Features")
