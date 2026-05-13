@@ -1,8 +1,8 @@
 streamlit
 numpy
 joblib
-scikit-learn
-matplotlib
 Pillow
-pandas
+scipy
+matplotlib
+scikit-learn
 openpyxl
