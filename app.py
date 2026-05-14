@@ -34,7 +34,7 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 # --- 2. UI CONFIGURATION ---
 st.set_page_config(page_title="GPR-X Detection", layout="wide")
 st.title("📡 GPR-X")
-st.markdown("""Hyperbolic Cavity Pattern with Metal Pipes in the Presence of Noise Environments""")
+st.markdown("""Hyperbolic Cavity Pattern with Metal Pipes in the Presence of Noise Environments Using BEMD""")
 
 
 # Guna session state untuk simpan kunci uploader
