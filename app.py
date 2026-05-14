@@ -33,7 +33,10 @@ def matlab_resize_manual(img, new_shape=(100, 120)):
 
 # --- 2. UI CONFIGURATION ---
 st.set_page_config(page_title="GPR-X Detection", layout="wide")
-st.title("📡 GPR-X Real-Time Scanner")
+st.title("📡 GPR-X")
+st.markdown("HYPERBOLIC CAVITY PATTERN WITH METAL PIPES IN THE PRESENCE OF NOISE
+ENVIRONMENTS USING BEMD")
+
 
 # Guna session state untuk simpan kunci uploader
 if 'uploader_id' not in st.session_state:
